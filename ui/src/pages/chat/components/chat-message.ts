@@ -58,6 +58,12 @@ import { getSafeLocalStorage } from "../../../local-storage.ts";
 import { renderChatAvatar } from "../chat-avatar.ts";
 import { persistedMessageEntryId } from "../chat-thread.ts";
 import type { PlanStatus } from "../tool-stream.ts";
+import {
+  visibleWorkspaceConflictPaths,
+  workspaceConflictCount,
+  workspaceResultConflictFromTranscript,
+  type WorkspaceResultConflict,
+} from "../workspace-conflict.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 import { renderChatPlanChecklist } from "./chat-plan-checklist.ts";
 import { renderChatQuestionSummary } from "./chat-question-card.ts";
@@ -830,6 +836,9 @@ function buildGroupedMessageRenderOptions(
 
 export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroupOptions) {
   const normalizedRole = normalizeRoleForGrouping(group.role);
+  const isWorkspaceConflict = group.messages.every((item) =>
+    Boolean(workspaceResultConflictFromTranscript(item.message)),
+  );
   const assistantName = opts.assistantName ?? "Assistant";
   const resolvedUserName = resolveLocalUserName({
     name: opts.userName ?? null,
@@ -843,7 +852,9 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
         ? (userLabel ?? assistantName)
         : normalizedRole === "tool"
           ? "Tool"
-          : normalizedRole;
+          : isWorkspaceConflict
+            ? t("chat.workspaceConflict.eventSender")
+            : normalizedRole;
   const roleClass =
     normalizedRole === "user"
       ? "user"
@@ -851,7 +862,9 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
         ? "assistant"
         : normalizedRole === "tool"
           ? "tool"
-          : "other";
+          : isWorkspaceConflict
+            ? "workspace-conflict"
+            : "other";
 
   // Aggregate usage/cost/model across all messages in the group
   const meta = extractGroupMeta(group, opts.contextWindow ?? null);
@@ -2333,6 +2346,10 @@ function renderGroupedMessage(
   const sourceRole = normalizeRoleForGrouping(role);
   const normalizedMessage = normalizeMessage(message);
   const normalizedRole = normalizeRoleForGrouping(normalizedMessage.role);
+  const workspaceConflict = workspaceResultConflictFromTranscript(message);
+  if (workspaceConflict) {
+    return renderWorkspaceConflictTranscriptMessage(workspaceConflict, messageKey, opts.entryId);
+  }
   const isToolShell = normalizedRole === "tool";
   const isStandaloneToolMessage = isStandaloneToolMessageForDisplay(message);
 
@@ -2652,6 +2669,49 @@ function renderGroupedMessage(
             ×${duplicateCount}
           </div>`
         : nothing}
+    </div>
+  `;
+}
+
+function renderWorkspaceConflictTranscriptMessage(
+  conflict: WorkspaceResultConflict,
+  messageKey: string,
+  entryId?: string,
+) {
+  const count = workspaceConflictCount(conflict);
+  const visible = visibleWorkspaceConflictPaths(conflict);
+  return html`
+    <div
+      class="chat-bubble chat-bubble--workspace-conflict"
+      data-message-id=${messageKey}
+      data-entry-id=${entryId || nothing}
+    >
+      <div class="chat-workspace-conflict-event" role="status">
+        <div class="chat-workspace-conflict-event__header">
+          <span aria-hidden="true">${icons.alertTriangle}</span>
+          <strong
+            >${t(
+              count === 1
+                ? "chat.workspaceConflict.eventTitleOne"
+                : "chat.workspaceConflict.eventTitleMany",
+              { count: String(count) },
+            )}</strong
+          >
+        </div>
+        <p>${t("chat.workspaceConflict.eventDescription")}</p>
+        <ul class="chat-workspace-conflict-paths">
+          ${visible.paths.map((entryPath) => html`<li><code>${entryPath}</code></li>`)}
+        </ul>
+        ${visible.remaining > 0
+          ? html`<div class="chat-workspace-conflict-more">
+              ${t("chat.workspaceConflict.morePaths", { count: String(visible.remaining) })}
+            </div>`
+          : nothing}
+        <div class="chat-workspace-conflict-ref">
+          <span>${t("chat.workspaceConflict.stagedResult")}</span>
+          <code>${conflict.stagedResultRef}</code>
+        </div>
+      </div>
     </div>
   `;
 }
