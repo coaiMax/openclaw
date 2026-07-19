@@ -4,6 +4,7 @@ import type {
   BoardCommandEvent,
   BoardOp,
   BoardSnapshot,
+  BoardWidget,
 } from "@openclaw/gateway-protocol";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { t } from "../../i18n/index.ts";
@@ -12,6 +13,10 @@ import {
   normalizeSessionKeyForUiComparison,
 } from "../sessions/session-key.ts";
 import { applyMockBoardOp, normalizeMockBoardSnapshot } from "./mock-ops.ts";
+import {
+  copyBoardWidgetTicketReceipt,
+  recordBoardWidgetTicketReceipt,
+} from "./widget-ticket-lifetime.ts";
 export type { BoardCommandEvent };
 export type { BoardViewCallbacks } from "./view-types.ts";
 
@@ -506,7 +511,7 @@ export class GatewayBoardProvider implements BoardProvider {
         stateGeneration === this.stateGeneration
       ) {
         this.stateGeneration += 1;
-        this.setSnapshot(snapshot, changedWidget ? new Set([changedWidget]) : new Set());
+        this.setSnapshot(snapshot, changedWidget ? new Set([changedWidget]) : new Set(), true);
       }
     } catch (error) {
       if (
@@ -520,24 +525,62 @@ export class GatewayBoardProvider implements BoardProvider {
     }
   }
 
-  private setSnapshot(snapshot: BoardSnapshot, changedWidgets = new Set<string>()): void {
+  private setSnapshot(
+    snapshot: BoardSnapshot,
+    changedWidgets = new Set<string>(),
+    preserveMissingViewContracts = false,
+  ): void {
+    const receivedAtMs = Date.now();
     const previousWidgets = new Map(
       this.snapshotSignal.value.widgets.map((widget) => [widget.name, widget]),
     );
     const widgets = snapshot.widgets.map((widget) => {
       const previous = previousWidgets.get(widget.name);
       if (
+        preserveMissingViewContracts &&
         previous &&
         !changedWidgets.has(widget.name) &&
         previous.revision === widget.revision &&
+        widget.viewGeneration === undefined
+      ) {
+        // Mutation snapshots contain board state but not the view contract minted
+        // by board.get. Keep that contract only while the document revision matches.
+        const preserved = preserveBoardWidgetViewContract(widget, previous);
+        copyBoardWidgetTicketReceipt(preserved, previous, receivedAtMs);
+        return preserved;
+      }
+      if (
+        previous &&
+        !changedWidgets.has(widget.name) &&
+        previous.revision === widget.revision &&
+        previous.viewGeneration === widget.viewGeneration &&
+        !widget.sandboxUrl &&
         previous.frameUrl
       ) {
-        return { ...widget, frameUrl: previous.frameUrl };
+        const preserved = { ...widget, frameUrl: previous.frameUrl };
+        recordBoardWidgetTicketReceipt(preserved, receivedAtMs);
+        return preserved;
       }
+      recordBoardWidgetTicketReceipt(widget, receivedAtMs);
       return widget;
     });
     this.snapshotSignal.set({ ...snapshot, widgets });
   }
+}
+
+function preserveBoardWidgetViewContract(widget: BoardWidget, previous: BoardWidget): BoardWidget {
+  return {
+    ...widget,
+    ...(previous.frameUrl !== undefined ? { frameUrl: previous.frameUrl } : {}),
+    ...(previous.viewTicket !== undefined ? { viewTicket: previous.viewTicket } : {}),
+    ...(previous.viewTicketTtlMs !== undefined
+      ? { viewTicketTtlMs: previous.viewTicketTtlMs }
+      : {}),
+    ...(previous.viewGeneration !== undefined ? { viewGeneration: previous.viewGeneration } : {}),
+    ...(previous.sandboxUrl !== undefined ? { sandboxUrl: previous.sandboxUrl } : {}),
+    ...(previous.sandboxPort !== undefined ? { sandboxPort: previous.sandboxPort } : {}),
+    ...(previous.sandboxOrigin !== undefined ? { sandboxOrigin: previous.sandboxOrigin } : {}),
+  };
 }
 
 const nullProviders = new Map<string, NullProvider>();
