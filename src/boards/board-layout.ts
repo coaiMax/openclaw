@@ -50,6 +50,14 @@ function cloneWidget(widget: BoardWidget): BoardWidget {
     ...(widget.declaredSummary !== undefined
       ? { declaredSummary: [...widget.declaredSummary] }
       : {}),
+    ...(widget.declared !== undefined
+      ? {
+          declared: {
+            ...(widget.declared.netOrigins ? { netOrigins: [...widget.declared.netOrigins] } : {}),
+            ...(widget.declared.tools ? { tools: [...widget.declared.tools] } : {}),
+          },
+        }
+      : {}),
   };
 }
 

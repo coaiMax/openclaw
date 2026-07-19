@@ -5,7 +5,9 @@ import type {
   BoardSnapshot,
   BoardWidgetContent,
   BoardWidgetMaterializedPutParams,
+  BoardWidgetDeclared,
 } from "../../packages/gateway-protocol/src/index.js";
+import { boardDeclarationIsSubset, normalizeBoardWidgetDeclared } from "./board-capabilities.js";
 import {
   applyBoardOps,
   BOARD_SIZE_PRESETS,
@@ -21,6 +23,7 @@ type BoardWidgetHtmlDocument = {
   sha256: string;
   viewGeneration: string;
   grantState: "none" | "pending" | "granted" | "rejected";
+  declared?: BoardWidgetDeclared;
 };
 type BoardWidgetMcpAppDocument = {
   descriptor: BoardMcpAppDescriptor;
@@ -64,6 +67,16 @@ export function cloneBoardSnapshot(snapshot: BoardSnapshot): BoardSnapshot {
       ...(widget.declaredSummary !== undefined
         ? { declaredSummary: [...widget.declaredSummary] }
         : {}),
+      ...(widget.declared !== undefined
+        ? {
+            declared: {
+              ...(widget.declared.netOrigins
+                ? { netOrigins: [...widget.declared.netOrigins] }
+                : {}),
+              ...(widget.declared.tools ? { tools: [...widget.declared.tools] } : {}),
+            },
+          }
+        : {}),
     })),
   };
 }
@@ -72,6 +85,7 @@ function createBoardWidgetDocument(
   content: BoardWidgetContent,
   revision: number,
   grantState: BoardWidgetHtmlDocument["grantState"],
+  declared?: BoardWidgetDeclared,
 ): BoardWidgetDocument {
   if (content.kind === "html") {
     return {
@@ -80,6 +94,7 @@ function createBoardWidgetDocument(
       sha256: createHash("sha256").update(content.html).digest("hex"),
       viewGeneration: randomBytes(16).toString("hex"),
       grantState,
+      ...(declared ? { declared } : {}),
     };
   }
   return { descriptor: { ...content.descriptor }, revision };
@@ -98,6 +113,7 @@ export function createBoardDeclaredSummary(
 export function createBoardWidgetPutSnapshot(
   prior: BoardSnapshot,
   params: BoardWidgetMaterializedPutParams,
+  grantedSha256?: string,
 ): BoardSnapshot {
   if (
     params.content.kind === "html" &&
@@ -125,12 +141,19 @@ export function createBoardWidgetPutSnapshot(
   }
   const size = BOARD_SIZE_PRESETS[(params.placement?.size ?? "md") as BoardSize];
   const widgetRevision = (existing?.revision ?? 0) + 1;
-  const declaredSummary = createBoardDeclaredSummary(params.declared);
-  // A grant follows new bytes only when every declared capability was already approved.
-  // Any widening must return to pending before the widget can be served.
+  const declared = normalizeBoardWidgetDeclared(params.declared);
+  const declaredSummary = createBoardDeclaredSummary(declared);
+  const contentSha256 =
+    params.content.kind === "html"
+      ? createHash("sha256").update(params.content.html).digest("hex")
+      : undefined;
+  // Grants are frozen to the approved bytes. The same document may narrow its
+  // declaration, but changed bytes or widened authority must return to pending.
   const preservesGrant =
+    declared !== undefined &&
     existing?.grantState === "granted" &&
-    (declaredSummary ?? []).every((entry) => existing.declaredSummary?.includes(entry));
+    contentSha256 === grantedSha256 &&
+    boardDeclarationIsSubset(declared, existing.declared);
   layout = insertBoardWidget(
     layout,
     {
@@ -148,6 +171,7 @@ export function createBoardWidgetPutSnapshot(
       grantState: preservesGrant ? "granted" : declaredSummary ? "pending" : "none",
       revision: widgetRevision,
       ...(declaredSummary ? { declaredSummary } : {}),
+      ...(declared ? { declared } : {}),
     },
     {
       tabId,
@@ -156,7 +180,9 @@ export function createBoardWidgetPutSnapshot(
     },
   );
   if (!declaredSummary) {
-    delete layout.widgets.find((widget) => widget.name === params.name)!.declaredSummary;
+    const widget = layout.widgets.find((candidate) => candidate.name === params.name)!;
+    delete widget.declaredSummary;
+    delete widget.declared;
   }
   return {
     sessionKey: params.sessionKey,
@@ -227,17 +253,36 @@ export class InMemoryBoardStore implements BoardStore {
   }
 
   putWidget(params: BoardWidgetMaterializedPutParams): BoardSnapshot {
-    const current = this.boards.get(params.sessionKey);
-    const prior = current?.snapshot ?? emptyBoardSnapshot(params.sessionKey);
-    const snapshot = createBoardWidgetPutSnapshot(prior, params);
+    const declared = normalizeBoardWidgetDeclared(params.declared);
+    const canonicalParams: BoardWidgetMaterializedPutParams = { ...params };
+    if (declared) {
+      canonicalParams.declared = declared;
+    } else {
+      delete canonicalParams.declared;
+    }
+    const current = this.boards.get(canonicalParams.sessionKey);
+    const prior = current?.snapshot ?? emptyBoardSnapshot(canonicalParams.sessionKey);
+    const existingDocument = current?.documents.get(canonicalParams.name);
+    const grantedSha256 =
+      existingDocument && "html" in existingDocument && existingDocument.grantState === "granted"
+        ? existingDocument.sha256
+        : undefined;
+    const snapshot = createBoardWidgetPutSnapshot(prior, canonicalParams, grantedSha256);
     const documents = new Map(current?.documents ?? []);
-    const widgetRevision = snapshot.widgets.find((widget) => widget.name === params.name)!.revision;
-    const widget = snapshot.widgets.find((candidate) => candidate.name === params.name)!;
+    const widgetRevision = snapshot.widgets.find(
+      (widget) => widget.name === canonicalParams.name,
+    )!.revision;
+    const widget = snapshot.widgets.find((candidate) => candidate.name === canonicalParams.name)!;
     documents.set(
-      params.name,
-      createBoardWidgetDocument(params.content, widgetRevision, widget.grantState),
+      canonicalParams.name,
+      createBoardWidgetDocument(
+        canonicalParams.content,
+        widgetRevision,
+        widget.grantState,
+        declared,
+      ),
     );
-    this.boards.set(params.sessionKey, { snapshot, documents });
+    this.boards.set(canonicalParams.sessionKey, { snapshot, documents });
     return cloneBoardSnapshot(snapshot);
   }
 
@@ -266,7 +311,19 @@ export class InMemoryBoardStore implements BoardStore {
       return undefined;
     }
     return "html" in document
-      ? { ...document }
+      ? {
+          ...document,
+          ...(document.declared
+            ? {
+                declared: {
+                  ...(document.declared.netOrigins
+                    ? { netOrigins: [...document.declared.netOrigins] }
+                    : {}),
+                  ...(document.declared.tools ? { tools: [...document.declared.tools] } : {}),
+                },
+              }
+            : {}),
+        }
       : { descriptor: { ...document.descriptor }, revision: document.revision };
   }
 

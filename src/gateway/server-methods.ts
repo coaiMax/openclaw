@@ -393,7 +393,16 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
     loadHandlers: loadUiCommandHandlers,
   }),
   ...createLazyCoreHandlers({
-    methods: ["board.get", "board.update", "board.widget.put", "board.widget.grant", "board.event"],
+    methods: [
+      "board.get",
+      "board.update",
+      "board.widget.put",
+      "board.widget.grant",
+      "board.event",
+      "board.prompt.authorize",
+      "board.data.read",
+      "board.action",
+    ],
     loadHandlers: loadBoardHandlers,
   }),
   ...createLazyCoreHandlers({

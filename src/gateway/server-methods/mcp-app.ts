@@ -55,12 +55,13 @@ export const mcpAppHandlers: GatewayRequestHandlers = {
         viewId: requireString(params, "viewId"),
         cfg: context.getRuntimeConfig(),
       });
-      return await withMcpAppActiveView(active, "read", () => {
+      return await withMcpAppActiveView(active, "read", async () => {
         const { view } = active;
         const interactive = view.allowedAppToolNames !== undefined && view.readOnly !== true;
         const updateModelContextSupported =
           interactive && active.runtime.mcpAppModelContextRevoked !== true;
-        const sandboxPort = context.getMcpAppSandboxPort?.();
+        const sandboxPort =
+          context.getMcpAppSandboxPort?.() ?? (await context.ensureSandboxHostPort?.());
         if (sandboxPort === undefined) {
           throw new Error("MCP App sandbox listener is unavailable; restart the Gateway");
         }

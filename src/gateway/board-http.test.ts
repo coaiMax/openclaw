@@ -142,7 +142,10 @@ describe("board widget HTTP", () => {
     const response = await request("status", { ticket: ticketFor("status") });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(response.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+    expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox allow-scripts");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(response.headers.get("cache-control")).toBe("no-cache");
     await expect(response.text()).resolves.toBe("<!doctype html><p>Status</p>");
   });
@@ -160,7 +163,9 @@ describe("board widget HTTP", () => {
     const valid = ticketFor("status");
     const readSpy = vi.spyOn(store, "readWidgetHtml");
     expect((await request("status")).status).toBe(401);
-    expect((await request("status", { ticket: "garbage" })).status).toBe(401);
+    const garbage = await request("status", { ticket: "garbage" });
+    expect(garbage.status).toBe(401);
+    expect(garbage.headers.get("access-control-allow-origin")).toBe("*");
     expect((await request("status", { ticket: `${valid.slice(0, -1)}x` })).status).toBe(401);
     expect((await request("status", { ticket: expired })).status).toBe(401);
     expect(readSpy).not.toHaveBeenCalled();
@@ -174,6 +179,9 @@ describe("board widget HTTP", () => {
     store.grant("agent:main:main", "grantable", "granted", 1);
     const response = await request("grantable", { ticket });
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toContain(
+      "connect-src https://example.com",
+    );
     await expect(response.text()).resolves.toBe("<script>pending()</script>");
   });
 

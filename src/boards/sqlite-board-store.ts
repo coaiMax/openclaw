@@ -8,6 +8,7 @@ import type {
   BoardTab,
   BoardWidget,
   BoardWidgetMaterializedPutParams,
+  BoardWidgetDeclared,
 } from "../../packages/gateway-protocol/src/index.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import {
@@ -28,6 +29,7 @@ import {
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { normalizeBoardWidgetDeclared } from "./board-capabilities.js";
 import { applyBoardOps, BoardValidationError, normalizeBoardLayout } from "./board-layout.js";
 import {
   cloneBoardSnapshot,
@@ -53,6 +55,7 @@ type StoredBoard = {
 };
 
 const ensuredBoardDatabases = new WeakSet<DatabaseSync>();
+const BOARD_GRANT_SEMANTICS_VERSION = 2;
 
 // Read-only connections cannot run the lazy DDL, and a pre-existing v13 DB has
 // no board tables until the first write. Reads must treat that as "no boards",
@@ -99,18 +102,72 @@ type SqliteBoardStoreOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
-function parseManifest(value: string): BoardWidgetMaterializedPutParams["declared"] {
-  const parsed = JSON.parse(value) as { netOrigins?: unknown; tools?: unknown };
+type ParsedBoardManifest = {
+  declared?: BoardWidgetDeclared;
+  grantSemanticsVersion?: number;
+};
+
+function parseManifest(value: string): ParsedBoardManifest {
+  const parsed = JSON.parse(value) as {
+    netOrigins?: unknown;
+    tools?: unknown;
+    grantSemanticsVersion?: unknown;
+  };
   const netOrigins = Array.isArray(parsed.netOrigins)
     ? parsed.netOrigins.filter((entry): entry is string => typeof entry === "string")
     : undefined;
   const tools = Array.isArray(parsed.tools)
     ? parsed.tools.filter((entry): entry is string => typeof entry === "string")
     : undefined;
-  return {
-    ...(netOrigins?.length ? { netOrigins } : {}),
-    ...(tools?.length ? { tools } : {}),
-  };
+  try {
+    const declared = normalizeBoardWidgetDeclared({
+      ...(netOrigins?.length ? { netOrigins } : {}),
+      ...(tools?.length ? { tools } : {}),
+    });
+    return {
+      ...(declared ? { declared } : {}),
+      ...(parsed.grantSemanticsVersion === BOARD_GRANT_SEMANTICS_VERSION
+        ? { grantSemanticsVersion: BOARD_GRANT_SEMANTICS_VERSION }
+        : {}),
+    };
+  } catch (error) {
+    if (error instanceof BoardValidationError) {
+      // Unsafe manifests persisted before declaration validation lose their
+      // entire authority; retaining a partial old grant would widen access.
+      return {};
+    }
+    throw error;
+  }
+}
+
+function serializeManifest(
+  declared: BoardWidgetDeclared | undefined,
+  grantState: BoardWidget["grantState"],
+): string {
+  return JSON.stringify({
+    ...declared,
+    ...(grantState === "granted" ? { grantSemanticsVersion: BOARD_GRANT_SEMANTICS_VERSION } : {}),
+  });
+}
+
+function effectiveGrantState(
+  grantState: BoardWidget["grantState"],
+  manifest: ParsedBoardManifest,
+): BoardWidget["grantState"] {
+  if (!manifest.declared) {
+    // Losing an invalid legacy declaration removes authority, never an
+    // operator's explicit rejection of the widget document itself.
+    return grantState === "rejected" ? "rejected" : "none";
+  }
+  if (
+    grantState === "granted" &&
+    manifest.grantSemanticsVersion !== BOARD_GRANT_SEMANTICS_VERSION
+  ) {
+    // Older stores rebound granted_sha after byte changes. Their hashes cannot
+    // prove operator approval under the byte-frozen capability contract.
+    return "pending";
+  }
+  return grantState;
 }
 
 function parseDescriptor(value: string): BoardMcpAppDescriptor {
@@ -127,7 +184,9 @@ function rowToTab(row: SelectedBoardTabRow): BoardTab {
 }
 
 function rowToWidget(row: SelectedBoardWidgetRow): BoardWidget {
-  const declaredSummary = createBoardDeclaredSummary(parseManifest(row.manifest));
+  const manifest = parseManifest(row.manifest);
+  const declared = manifest.declared;
+  const declaredSummary = createBoardDeclaredSummary(declared);
   return {
     name: row.name,
     tabId: row.tab_id,
@@ -136,9 +195,10 @@ function rowToWidget(row: SelectedBoardWidgetRow): BoardWidget {
     sizeW: row.size_w,
     sizeH: row.size_h,
     position: row.position,
-    grantState: row.grant_state as BoardWidget["grantState"],
+    grantState: effectiveGrantState(row.grant_state as BoardWidget["grantState"], manifest),
     revision: row.revision,
     ...(declaredSummary ? { declaredSummary } : {}),
+    ...(declared ? { declared } : {}),
   };
 }
 
@@ -293,7 +353,7 @@ function contentFields(
   viewGeneration: string,
   now: number,
 ) {
-  const manifest = JSON.stringify(params.declared ?? {});
+  const manifest = serializeManifest(params.declared, grantState);
   if (params.content.kind === "html") {
     const sha256 = createHash("sha256").update(params.content.html).digest("hex");
     return {
@@ -438,7 +498,16 @@ export class SqliteBoardStore implements BoardStore {
 
   putWidget(params: BoardWidgetMaterializedPutParams): BoardSnapshot {
     const { database, resolved } = this.prepareWrite(params.sessionKey);
-    const canonicalParams = { ...params, sessionKey: resolved.sessionKey };
+    const declared = normalizeBoardWidgetDeclared(params.declared);
+    const canonicalParams: BoardWidgetMaterializedPutParams = {
+      ...params,
+      sessionKey: resolved.sessionKey,
+    };
+    if (declared) {
+      canonicalParams.declared = declared;
+    } else {
+      delete canonicalParams.declared;
+    }
     const viewGeneration = randomBytes(16).toString("hex");
     return runOpenClawAgentWriteTransaction(
       (transactionDatabase) => {
@@ -449,9 +518,13 @@ export class SqliteBoardStore implements BoardStore {
           );
         }
         const previous = readStoredBoard(transactionDatabase, resolved.sessionKey);
-        const next = createBoardWidgetPutSnapshot(previous.snapshot, canonicalParams);
-        const widget = next.widgets.find((candidate) => candidate.name === canonicalParams.name)!;
         const existing = previous.widgetRows.find((row) => row.name === canonicalParams.name);
+        const next = createBoardWidgetPutSnapshot(
+          previous.snapshot,
+          canonicalParams,
+          existing?.granted_sha ?? undefined,
+        );
+        const widget = next.widgets.find((candidate) => candidate.name === canonicalParams.name)!;
         const now = Date.now();
         upsertTabs(transactionDatabase, previous, next);
         const db = getNodeSqliteKysely<BoardDatabase>(transactionDatabase.db);
@@ -516,6 +589,7 @@ export class SqliteBoardStore implements BoardStore {
         const next = createBoardGrantSnapshot(previous.snapshot, name, decision, revision);
         upsertTabs(transactionDatabase, previous, next);
         const row = previous.widgetRows.find((candidate) => candidate.name === name)!;
+        const declared = parseManifest(row.manifest).declared;
         const db = getNodeSqliteKysely<BoardDatabase>(transactionDatabase.db);
         executeSqliteQuerySync(
           transactionDatabase.db,
@@ -524,6 +598,7 @@ export class SqliteBoardStore implements BoardStore {
             .set({
               grant_state: decision,
               granted_sha: decision === "granted" ? row.sha256 : null,
+              manifest: serializeManifest(declared, decision),
               updated_at: Date.now(),
             })
             .where("session_key", "=", resolved.sessionKey)
@@ -556,6 +631,7 @@ export class SqliteBoardStore implements BoardStore {
               "sha256",
               "view_generation",
               "grant_state",
+              "manifest",
             ])
             .where("session_key", "=", resolved.sessionKey)
             .where("name", "=", name)
@@ -565,12 +641,15 @@ export class SqliteBoardStore implements BoardStore {
           return undefined;
         }
         if (row.content_kind === "html" && row.html !== null && row.view_generation !== null) {
+          const manifest = parseManifest(row.manifest);
+          const declared = manifest.declared;
           return {
             html: Buffer.from(row.html).toString("utf8"),
             revision: row.revision,
             sha256: row.sha256,
             viewGeneration: row.view_generation,
-            grantState: row.grant_state as BoardWidget["grantState"],
+            grantState: effectiveGrantState(row.grant_state as BoardWidget["grantState"], manifest),
+            ...(declared ? { declared } : {}),
           };
         }
         if (row.content_kind === "mcp-app" && row.descriptor_json !== null) {
