@@ -214,7 +214,7 @@ import {
   readChatSessionSnapshot,
   type ChatMessageCache,
 } from "./session-message-cache.ts";
-import { clearWaitingApprovalIfMissing } from "./tool-stream.ts";
+import { reconcileWaitingApprovalsFromSnapshot } from "./tool-stream.ts";
 import { configureToolTitleFetcher } from "./tool-titles.ts";
 
 type ChatPageContext = ApplicationContext;
@@ -420,7 +420,7 @@ class ChatPane extends OpenClawLightDomElement {
         (overlays, notify) =>
           overlays.subscribe((snapshot) => {
             if (this.state) {
-              clearWaitingApprovalIfMissing(this.state, snapshot.approvalQueue);
+              this.reconcileWaitingApprovalSnapshot(snapshot.approvalQueue);
             }
             notify();
           }),
@@ -875,6 +875,7 @@ class ChatPane extends OpenClawLightDomElement {
       previousDraftRetry,
       previousComposerScope,
     });
+    this.reconcileWaitingApprovalSnapshot();
     retryChatComposerMemoryFallback(state, nextSessionKey);
     // Route restoration is the new persistence baseline. An untouched pane
     // must not later erase a draft written by another split pane. Memory-only
@@ -2286,9 +2287,24 @@ class ChatPane extends OpenClawLightDomElement {
       return;
     }
     const reconciledLocalCompletion = reconcileStaleChatRunAfterSessionStatePublication(state);
+    this.reconcileWaitingApprovalSnapshot();
     if (!reconciledLocalCompletion) {
       state.requestUpdate?.();
     }
+  }
+
+  private reconcileWaitingApprovalSnapshot(
+    approvalQueue = this.context.overlays.snapshot.approvalQueue,
+  ): boolean {
+    const state = this.state;
+    if (!state) {
+      return false;
+    }
+    return reconcileWaitingApprovalsFromSnapshot(
+      state,
+      approvalQueue,
+      hasAbortableSessionRun(state),
+    );
   }
 
   private applyApplicationConfig(config: ApplicationContext["config"]["current"]) {
@@ -2452,6 +2468,7 @@ class ChatPane extends OpenClawLightDomElement {
       void this.refreshTaskSuggestions();
       void this.refreshSessionPullRequests();
     }
+    this.reconcileWaitingApprovalSnapshot();
     state.requestUpdate?.();
   }
 
@@ -3016,6 +3033,7 @@ class ChatPane extends OpenClawLightDomElement {
         state.chatSideChatHidden = false;
         retirePendingChatSideQuestion(state);
         state.resetToolStream();
+        this.reconcileWaitingApprovalSnapshot();
         void refreshPageChat(state, { awaitHistory: true, scheduleScroll: false });
       },
       onChatScroll: (event) => this.handleTranscriptScroll(event),
