@@ -937,11 +937,9 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       runStartedAt: 1_000,
     });
     params.cfgWithAgentDefaults = {
-      messages: {
-        tts: {
-          auto: "tagged",
-          provider: "microsoft",
-        },
+      tts: {
+        auto: "tagged",
+        provider: "microsoft",
       },
     } as never;
 

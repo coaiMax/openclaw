@@ -147,16 +147,14 @@ function createSummarizeTextDeps() {
 
 function createOpenAiTelephonyCfg(model: "tts-1" | "gpt-4o-mini-tts"): OpenClawConfig {
   return asLegacyTtsConfig({
-    messages: {
-      tts: {
-        provider: "openai",
-        providers: {
-          openai: {
-            apiKey: "test-key",
-            model,
-            voice: "alloy",
-            instructions: "Speak warmly",
-          },
+    tts: {
+      provider: "openai",
+      providers: {
+        openai: {
+          apiKey: "test-key",
+          model,
+          voice: "alloy",
+          instructions: "Speak warmly",
         },
       },
     },
@@ -458,8 +456,7 @@ function setupTestSpeechProviderRegistry() {
 }
 
 function createResolvedSummarizationConfig(cfg: OpenClawConfig): ResolvedTtsConfig {
-  const rawConfig =
-    typeof cfg.messages?.tts === "object" && cfg.messages?.tts !== null ? cfg.messages.tts : {};
+  const rawConfig = typeof cfg.tts === "object" && cfg.tts !== null ? cfg.tts : {};
   return {
     auto: "off",
     mode: rawConfig.mode ?? "final",
@@ -516,7 +513,7 @@ export function describeTtsConfigContract() {
     describe("resolveEdgeOutputFormat", () => {
       const baseCfg: OpenClawConfig = {
         agents: { defaults: { model: { primary: "openai/gpt-4o-mini" } } },
-        messages: { tts: {} },
+        tts: {},
       };
 
       it.each([
@@ -529,10 +526,8 @@ export function describeTtsConfigContract() {
           name: "override",
           cfg: {
             ...baseCfg,
-            messages: {
-              tts: {
-                edge: { outputFormat: "audio-24khz-96kbitrate-mono-mp3" },
-              },
+            tts: {
+              edge: { outputFormat: "audio-24khz-96kbitrate-mono-mp3" },
             },
           } as unknown as OpenClawConfig,
           expected: "audio-24khz-96kbitrate-mono-mp3",
@@ -707,12 +702,10 @@ export function describeTtsConfigContract() {
                   },
                 },
               },
-              messages: {
-                tts: {
-                  providers: {
-                    microsoft: {
-                      enabled: false,
-                    },
+              tts: {
+                providers: {
+                  microsoft: {
+                    enabled: false,
                   },
                 },
               },
@@ -731,13 +724,11 @@ export function describeTtsConfigContract() {
         const config = resolveTtsConfig(
           asLegacyOpenClawConfig({
             agents: { defaults: { model: { primary: "openai/gpt-4o-mini" } } },
-            messages: {
-              tts: {
-                provider: "edge",
-                providers: {
-                  edge: {
-                    enabled: true,
-                  },
+            tts: {
+              provider: "edge",
+              providers: {
+                edge: {
+                  enabled: true,
                 },
               },
             },
@@ -752,7 +743,7 @@ export function describeTtsConfigContract() {
     describe("resolveTtsConfig – openai.baseUrl", () => {
       const baseCfg: OpenClawConfig = {
         agents: { defaults: { model: { primary: "openai/gpt-4o-mini" } } },
-        messages: { tts: {} },
+        tts: {},
       };
 
       it.each([
@@ -772,9 +763,7 @@ export function describeTtsConfigContract() {
           name: "config wins over env",
           cfg: {
             ...baseCfg,
-            messages: {
-              tts: { ...baseCfg.messages!.tts, openai: { baseUrl: "http://my-server:9000/v1" } },
-            },
+            tts: { ...baseCfg.tts, openai: { baseUrl: "http://my-server:9000/v1" } },
           } as unknown as OpenClawConfig,
           env: { OPENAI_TTS_BASE_URL: "http://localhost:8880/v1" },
           expected: "http://my-server:9000/v1",
@@ -783,11 +772,9 @@ export function describeTtsConfigContract() {
           name: "config slash trimming",
           cfg: {
             ...baseCfg,
-            messages: {
-              tts: {
-                ...baseCfg.messages!.tts,
-                openai: { baseUrl: "http://my-server:9000/v1///" },
-              },
+            tts: {
+              ...baseCfg.tts,
+              openai: { baseUrl: "http://my-server:9000/v1///" },
             },
           } as unknown as OpenClawConfig,
           env: { OPENAI_TTS_BASE_URL: undefined },
@@ -833,7 +820,7 @@ export function describeTtsSummarizationContract() {
 
     const baseCfg: OpenClawConfig = {
       agents: { defaults: { model: { primary: "openai/gpt-4o-mini" } } },
-      messages: { tts: {} },
+      tts: {},
     };
 
     async function runSummarizeText(params?: {
@@ -892,7 +879,7 @@ export function describeTtsSummarizationContract() {
     it("uses summaryModel override when configured", async () => {
       const cfg: OpenClawConfig = {
         agents: { defaults: { model: { primary: "anthropic/claude-opus-4-5" } } },
-        messages: { tts: { summaryModel: "openai/gpt-4.1-mini" } },
+        tts: { summaryModel: "openai/gpt-4.1-mini" },
       };
       await runSummarizeText({ cfg });
 
@@ -1018,10 +1005,8 @@ export function describeTtsProviderRuntimeContract() {
           const result = await ttsRuntime.synthesizeSpeech({
             text: "hello fallback",
             cfg: {
-              messages: {
-                tts: {
-                  provider: "openai",
-                },
+              tts: {
+                provider: "openai",
               },
             },
           });
@@ -1094,10 +1079,8 @@ export function describeTtsProviderRuntimeContract() {
           const result = await ttsRuntime.textToSpeechTelephony({
             text: "hello telephony fallback",
             cfg: {
-              messages: {
-                tts: {
-                  provider: "primary-throws",
-                },
+              tts: {
+                provider: "primary-throws",
               },
             },
           });
@@ -1148,10 +1131,8 @@ export function describeTtsProviderRuntimeContract() {
         const result = await ttsRuntime.textToSpeech({
           text: "hello",
           cfg: {
-            messages: {
-              tts: {
-                provider: "openai",
-              },
+            tts: {
+              provider: "openai",
             },
           },
           disableFallback: true,
@@ -1215,13 +1196,11 @@ export function describeTtsAutoApplyContract() {
 
     const baseCfg: OpenClawConfig = asLegacyOpenClawConfig({
       agents: { defaults: { model: { primary: "openai/gpt-4o-mini" } } },
-      messages: {
-        tts: {
-          auto: "inbound",
-          provider: "openai",
-          providers: {
-            openai: { apiKey: "test-key", model: "gpt-4o-mini-tts", voice: "alloy" },
-          },
+      tts: {
+        auto: "inbound",
+        provider: "openai",
+        providers: {
+          openai: { apiKey: "test-key", model: "gpt-4o-mini-tts", voice: "alloy" },
         },
       },
     });
@@ -1242,7 +1221,7 @@ export function describeTtsAutoApplyContract() {
       ...baseCfg,
       messages: {
         ...baseCfg.messages!,
-        tts: { ...baseCfg.messages!.tts, auto: "tagged" },
+        tts: { ...baseCfg.tts, auto: "tagged" },
       },
     };
 

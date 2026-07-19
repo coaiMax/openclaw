@@ -390,17 +390,15 @@ describe("buildStatusMessage", () => {
     await withTempHome(async () => {
       const text = buildStatusMessage({
         config: {
-          messages: {
-            tts: {
-              auto: "always",
-              provider: "openai",
-              providers: {
-                openai: {
-                  displayName: "NeuTTS local",
-                  baseUrl: "http://user:secret@127.0.0.1:18801/v1?token=hidden#fragment",
-                  model: "neutts-nano",
-                  voice: "clara",
-                },
+          tts: {
+            auto: "always",
+            provider: "openai",
+            providers: {
+              openai: {
+                displayName: "NeuTTS local",
+                baseUrl: "http://user:secret@127.0.0.1:18801/v1?token=hidden#fragment",
+                model: "neutts-nano",
+                voice: "clara",
               },
             },
           },
