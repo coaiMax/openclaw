@@ -2235,12 +2235,15 @@ describe("memory-core dreaming phases", () => {
 
     const { beforeAgentReply } = createHarness(
       {
+        memory: {
+          search: {
+            enabled: false,
+          },
+        },
+
         agents: {
           defaults: {
             workspace: workspaceDir,
-            memorySearch: {
-              enabled: false,
-            },
           },
         },
         plugins: {
