@@ -214,6 +214,7 @@ import {
   readChatSessionSnapshot,
   type ChatMessageCache,
 } from "./session-message-cache.ts";
+import { clearWaitingApprovalIfMissing } from "./tool-stream.ts";
 import { configureToolTitleFetcher } from "./tool-titles.ts";
 
 type ChatPageContext = ApplicationContext;
@@ -416,7 +417,13 @@ class ChatPane extends OpenClawLightDomElement {
     void new SubscriptionsController(this)
       .watch(
         () => this.context?.overlays,
-        (overlays, notify) => overlays.subscribe(notify),
+        (overlays, notify) =>
+          overlays.subscribe((snapshot) => {
+            if (this.state) {
+              clearWaitingApprovalIfMissing(this.state, snapshot.approvalQueue);
+            }
+            notify();
+          }),
       )
       .watch(
         () => this.resolveBoardProvider(),
@@ -2864,6 +2871,7 @@ class ChatPane extends OpenClawLightDomElement {
       sending: state.chatSending,
       canAbort: hasAbortableSessionRun(state),
       runStatus: state.chatRunStatus,
+      waitingApproval: state.waitingApprovalStatuses.size > 0,
       compactionStatus: state.compactionStatus,
       fallbackStatus: state.fallbackStatus,
       planStatus: state.planStatus,

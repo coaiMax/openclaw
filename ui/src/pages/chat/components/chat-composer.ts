@@ -106,6 +106,7 @@ type ChatComposerProps = {
   sending: boolean;
   canAbort?: boolean;
   runStatus?: ChatRunUiStatus | null;
+  waitingApproval?: boolean;
   compactionStatus?: CompactionStatus | null;
   fallbackStatus?: FallbackStatus | null;
   planStatus?: PlanStatus | null;
@@ -2154,8 +2155,9 @@ export function renderChatComposer(props: ChatComposerProps) {
   );
   const composerControls = props.composerControls ?? nothing;
   const assistantName = props.assistantName || "OpenClaw";
-  const inProgressLabel =
-    submittedProgress?.sendState === "waiting-model"
+  const inProgressLabel = props.waitingApproval
+    ? t("chat.waitingForApproval")
+    : submittedProgress?.sendState === "waiting-model"
       ? t("chat.composer.preparingModel")
       : props.stream !== null
         ? t("chat.composer.responding", { name: assistantName })

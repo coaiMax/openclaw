@@ -114,6 +114,8 @@ type ChatThreadProps = {
   runActive?: boolean;
   /** True while the agent is visibly working (isChatRunWorking); shows the working spark. */
   runWorking?: boolean;
+  /** Re-labels the working spark while the active run is parked on an approval. */
+  waitingApproval?: boolean;
   planStatus?: PlanStatus | null;
   questionPrompts?: readonly QuestionPrompt[];
   sessions: SessionsListResult | null;
@@ -1084,6 +1086,7 @@ function renderChatThreadContents(
     queue: props.queue,
     showToolCalls: props.showToolCalls,
     runWorking: Boolean(props.runWorking),
+    waitingApproval: Boolean(props.waitingApproval),
     runActive: Boolean(props.runActive),
     planStatus: props.planStatus,
     questionPrompts: props.questionPrompts,
@@ -1187,6 +1190,7 @@ function renderChatThreadContents(
         questionPrompts,
         planStatus: props.planStatus,
         planActive: Boolean(props.runActive),
+        waitingApproval: props.waitingApproval,
         onOpenSidebar: props.onOpenSidebar,
         assistant: assistantIdentity,
         basePath: props.basePath,
@@ -1259,6 +1263,7 @@ function renderChatThreadContents(
     props.showToolCalls,
     Boolean(props.runActive),
     Boolean(props.runWorking),
+    Boolean(props.waitingApproval),
     props.planStatus,
     props.questionPrompts,
     Boolean(props.autoExpandToolCalls),
