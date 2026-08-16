@@ -790,4 +790,29 @@ describe("google prompt cache", () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(getCapturedPayload()?.cachedContent).toBe("cachedContents/system-cache-overflow");
   });
+
+  it("throws a descriptive error when the cache response is not valid JSON", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("not-json{{{", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const { streamFn } = createCapturingStreamFn();
+
+    await expect(
+      preparePromptCacheStream({
+        fetchMock,
+        now: 1_000_000,
+        sessionManager: makeSessionManager([]),
+        streamFn,
+      }).then((wrapped) =>
+        wrapped?.(
+          makeGoogleModel(),
+          { systemPrompt: "Follow policy.", messages: [] } as never,
+          {} as never,
+        ),
+      ),
+    ).rejects.toThrow("Google prompt cache response is not valid JSON");
+  });
 });
