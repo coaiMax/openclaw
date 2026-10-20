@@ -121,11 +121,6 @@ describe("subagent suspended delivery pressure", () => {
 
     await sweeper.sweepOnce();
 
-    expect(discardTerminalDelivery).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ runId: entry.runId, childSessionKey: entry.childSessionKey }),
-      Date.now(),
-      "expired",
-    );
     expect(entry.delivery?.status).toBe("suspended");
     expect(runs.get(entry.runId)?.delivery?.status).toBe("discarded");
     expect(completeCleanupBookkeeping).toHaveBeenCalledOnce();

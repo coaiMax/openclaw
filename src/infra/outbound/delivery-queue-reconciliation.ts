@@ -7,13 +7,15 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../errors.js";
 import { resolveOutboundChannelMessageAdapter } from "./channel-resolution.js";
 import type { OutboundDeliveryResult } from "./deliver-types.js";
+import { captureDeliveryPlacementEvidence } from "./delivery-placement-evidence.js";
+import { isPermanentDeliveryError } from "./delivery-queue-recovery-policy.js";
 import type { QueuedDelivery } from "./delivery-queue-types.js";
 
-export function buildReconciledSentResult(
+export function captureReconciledSentResult(
   entry: QueuedDelivery,
   reconciliation: Extract<ChannelMessageUnknownSendReconciliationResult, { status: "sent" }>,
 ) {
-  return {
+  const result = {
     channel: entry.channel,
     messageId:
       reconciliation.messageId ??
@@ -22,6 +24,7 @@ export function buildReconciledSentResult(
       "",
     receipt: reconciliation.receipt,
   } satisfies OutboundDeliveryResult;
+  return { result, placement: captureDeliveryPlacementEvidence(result) };
 }
 
 export function needsUnknownSendReconciliation(entry: QueuedDelivery): boolean {
@@ -105,6 +108,8 @@ export async function reconcileUnknownQueuedDelivery(params: {
   } catch (error) {
     const message = formatErrorMessage(error);
     params.warn(`Delivery entry ${entry.id} unknown-send reconciliation failed: ${message}`);
-    return { status: "unresolved", error: message, retryable: true };
+    // A thrown reconciler gives no verdict on the send; classify it like a direct-send failure so a
+    // permanent target error settles now instead of spending the retry budget.
+    return { status: "unresolved", error: message, retryable: !isPermanentDeliveryError(message) };
   }
 }

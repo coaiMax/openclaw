@@ -11,6 +11,7 @@ import type {
   SessionTranscriptTurnMutation,
   SessionTranscriptTurnMutationResult,
 } from "./goals-operations.types.js";
+import type { RecoveryNoticePredicate } from "./recovery-notice.js";
 import type { SessionLifecycleStoreTarget } from "./session-accessor.lifecycle-types.js";
 import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntryCommitContext } from "./session-entry-commit-context.js";
@@ -165,10 +166,8 @@ export type ResolvedSessionEntryUpdateResult<T> =
     }
   | {
       canonicalKey: string;
-      entry: SessionEntry;
       found: true;
       result: T;
-      storeKey: string;
     };
 
 export type SessionTranscriptAccessScope = Omit<SessionAccessScope, "sessionKey"> & {
@@ -218,13 +217,6 @@ export type SessionEntrySummary = {
   sessionKey: string;
   /** Entry value cloned from the backing store unless the caller requested borrowed reads. */
   entry: SessionEntry;
-};
-
-export type SessionEntryReadView = {
-  /** Row stored under the exact persisted key; no alias or canonical-key resolution. */
-  get(sessionKey: string): SessionEntry | undefined;
-  /** Every persisted row; call only when exact-key probes cannot settle the lookup. */
-  entries(): SessionEntrySummary[];
 };
 
 /** Session entry read by the exact persisted session key, without alias resolution. */
@@ -397,6 +389,8 @@ export type SessionTranscriptWriteLockAccessorContext = {
   /** Reads bounded indexed facts for supplied transcript mirror identities. */
   readMessageFacts: (params: {
     idempotencyKeys: readonly string[];
+    /** Limit identities to the current active branch; default includes abandoned branches. */
+    activeBranchOnly?: boolean;
     sourceRunId?: string;
   }) => Promise<{
     anchorsByIdempotencyKey: Map<string, TranscriptEntryAnchor>;
@@ -431,7 +425,8 @@ export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<
   };
   predicate?:
     | { kind: "latest-assistant-differs"; runId: string; text: string }
-    | { kind: "active-entry"; entryId: string; errorMessage: string };
+    | { kind: "active-entry"; entryId: string; errorMessage: string }
+    | RecoveryNoticePredicate;
   /**
    * Runs inside the session writer queue before the SQLite transaction begins.
    * The commit phase revalidates session ownership and database idempotency
@@ -505,7 +500,6 @@ export type SessionTranscriptTurnPersistOptions = {
 export interface SessionTranscriptTurnPersistResult {
   predicateSkipped?: boolean;
   sessionTurnMutationResult?: SessionTranscriptTurnMutationResult;
-  appendedCount: number;
   messages: TranscriptMessageAppendResult<unknown>[];
   rejectedReason?: "session-rebound";
   sessionEntry: SessionEntry | undefined;
@@ -883,7 +877,6 @@ export type {
   SessionLifecycleArtifactCleanupResult,
   SessionLifecycleStoreTarget,
   DeletedAgentSessionEntryPurgeParams,
-  SessionArchivedTranscriptCleanupRule,
   SessionEntryLifecycleMutationResult,
   SessionEntryLifecycleRemoval,
   SessionEntryLifecycleUpsert,

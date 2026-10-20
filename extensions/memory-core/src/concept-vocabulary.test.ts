@@ -1,6 +1,10 @@
 // Memory Core tests cover concept vocabulary plugin behavior.
 import { describe, expect, it } from "vitest";
-import { deriveConceptTags, normalizeConceptToken, summarizeConceptTagScriptCoverage } from "./concept-vocabulary.js";
+import {
+  deriveConceptTags,
+  normalizeConceptToken,
+  summarizeConceptTagScriptCoverage,
+} from "./concept-vocabulary.js";
 
 describe("concept vocabulary", () => {
   it("respects astral letter boundaries around short glossary terms", () => {

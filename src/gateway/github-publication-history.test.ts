@@ -10,6 +10,7 @@ import {
   createTestGitHubPublicationCoordinator,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  overrideCommands as interceptCommand,
   root,
 } from "./github-publication.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
@@ -19,14 +20,6 @@ const url = "https://github.com/openclaw/openclaw/pull/125200";
 const human = "Co-authored-by: alice <7+alice@users.noreply.github.com>";
 const marker = "OpenClaw-Publication: previous-writer";
 let f: Awaited<ReturnType<typeof historyFixture>>;
-function interceptCommand(
-  handler: (argv: string[]) => ReturnType<typeof commandResult> | undefined,
-) {
-  const fallback = mocks.runCommand.getMockImplementation()!;
-  mocks.runCommand.mockImplementation(
-    (argv: string[], options?: { input?: string }) => handler(argv) ?? fallback(argv, options),
-  );
-}
 
 async function historyFixture() {
   const workspace = await createRealPublicationWorkspace();
@@ -318,6 +311,18 @@ describe("GitHub publication branch history", () => {
     await f.rejected("diverged", "push_rejected", "published head");
   });
 
+  it("fails a push the remote rejected instead of leaving it unconfirmed", async () => {
+    const hook = path.join(f.remote, "hooks", "pre-receive");
+    await fs.writeFile(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(await f.publish("rejected-push")).toMatchObject({
+      status: "failed",
+      code: "push_rejected",
+      nextAction: expect.stringContaining("openclaw/openclaw; nothing was pushed"),
+    });
+    expect(await f.remoteHead()).toBe("");
+    expect(f.calls.some((args) => args.includes("POST"))).toBe(false);
+  });
+
   it("retains identity-change semantics when identity is revoked during remote observation", async () => {
     const fallback = mocks.runCommand.getMockImplementation()!;
     mocks.runCommand.mockImplementation(async (args: string[], options) => {
@@ -333,8 +338,19 @@ describe("GitHub publication branch history", () => {
   it.each(["failed", "wrong-ref", "fetch", "ancestry"] as const)(
     "leaves the workspace untouched when remote %s observation is unknown",
     async (fault) => {
-      const remoteCommit = await f.commit("remote object");
-      await f.git("push", f.remote, `${remoteCommit}:refs/heads/${BRANCH}`);
+      await f.git("push", f.remote, "HEAD:refs/heads/main");
+      // A locally created commit would let publication skip the remote fetch.
+      const remoteCommit = await f.git(
+        "-C",
+        f.remote,
+        "commit-tree",
+        await f.head("HEAD^{tree}"),
+        "-m",
+        "remote object",
+      );
+      await f.git("-C", f.remote, "update-ref", `refs/heads/${BRANCH}`, remoteCommit);
+      await expect(f.git("cat-file", "-e", `${remoteCommit}^{commit}`)).rejects.toThrow();
+      let faultInjected = false;
       interceptCommand((argv) => {
         const targeted =
           fault === "failed" || fault === "wrong-ref"
@@ -343,6 +359,7 @@ describe("GitHub publication branch history", () => {
               ? argv.includes("fetch") && argv.at(-1) === remoteCommit
               : argv.includes("--is-ancestor") && argv.at(-2) === remoteCommit;
         if (targeted) {
+          faultInjected = true;
           return fault === "wrong-ref"
             ? commandResult(`${remoteCommit}\trefs/heads/other\n`)
             : commandResult("", fault === "ancestry" ? 128 : 1);
@@ -350,6 +367,7 @@ describe("GitHub publication branch history", () => {
         return undefined;
       });
       await f.rejected(`unknown-${fault}`, "unavailable", "verify");
+      expect(faultInjected).toBe(true);
     },
   );
 });

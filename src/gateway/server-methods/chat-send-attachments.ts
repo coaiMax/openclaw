@@ -170,7 +170,7 @@ export async function prepareChatSendAttachments(params: {
             }
             try {
               const [
-                { ensureSandboxWorkspaceForSession },
+                { prepareSandboxWorkspaceForSession },
                 { SANDBOX_MEDIA_MAX_BYTES, stageSandboxMedia },
               ] = await Promise.all([
                 import("../../agents/sandbox/context.js"),
@@ -218,7 +218,7 @@ export async function prepareChatSendAttachments(params: {
                 : undefined;
               abortSignal.throwIfAborted();
               assertInputCurrent();
-              const sandbox = await ensureSandboxWorkspaceForSession({
+              using preparedWorkspace = await prepareSandboxWorkspaceForSession({
                 config: cfg,
                 agentId,
                 sessionKey,
@@ -226,23 +226,8 @@ export async function prepareChatSendAttachments(params: {
                 skillsSnapshot,
               });
               assertInputCurrent();
-              if (!sandbox) {
+              if (!preparedWorkspace) {
                 return refsByManagedPath(mediaPathRefs);
-              }
-
-              // The parser admits more than the sandbox can stage. Reject non-PDF files
-              // in that gap as permanent 4xx instead of a retryable staging failure.
-              const oversizedForSandbox = refsToStage.filter(
-                (ref) => ref.sizeBytes > SANDBOX_MEDIA_MAX_BYTES,
-              );
-              if (oversizedForSandbox.length > 0) {
-                const details = oversizedForSandbox
-                  .map((ref) => `${ref.label} (${ref.sizeBytes} bytes)`)
-                  .join(", ");
-                throw new UnsupportedAttachmentError(
-                  "non-image-too-large-for-sandbox",
-                  `attachments exceed sandbox staging limit (${SANDBOX_MEDIA_MAX_BYTES} bytes): ${details}`,
-                );
               }
 
               const stagingCtx: MsgContext = {
@@ -258,6 +243,7 @@ export async function prepareChatSendAttachments(params: {
                   sessionKey,
                   workspaceDir,
                   skillsSnapshot,
+                  preparedWorkspace,
                   abortSignal,
                 });
               } catch (stageErr) {
@@ -282,6 +268,17 @@ export async function prepareChatSendAttachments(params: {
                   `attachment staging incomplete: ${stagedSources.size}/${refsToStage.length} paths staged into sandbox workspace (missing: ${unstageable.map((ref) => ref.path).join(", ")})`,
                 );
               }
+              if (stagingEntry?.pendingWorktree || stagingEntry?.pendingProjectGitUrl) {
+                // The pre-ACK copy validates staging in the current workspace. Deferred
+                // preparation will bind another one, so let reply staging use the managed
+                // originals there instead of certifying this interim copy as final.
+                return mediaPathRefs.map((ref) => ({
+                  path: ref.path,
+                  url: ref.mediaRef,
+                  contentType: ref.mimeType,
+                  fileName: ref.label,
+                }));
+              }
               const stagedMedia = stagingCtx.media ?? [];
               // Preserve request order while mixing sandbox-relative paths with managed
               // host paths used by pass-through or fallback PDFs.
@@ -295,7 +292,7 @@ export async function prepareChatSendAttachments(params: {
                   url: ref.mediaRef,
                   contentType: resolved?.contentType ?? ref.mimeType,
                   fileName: ref.label,
-                  workspaceDir: sandbox.workspaceDir,
+                  workspaceDir: preparedWorkspace.workspace.workspaceDir,
                 };
               });
             } catch (err) {

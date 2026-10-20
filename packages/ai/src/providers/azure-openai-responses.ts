@@ -51,6 +51,7 @@ export const streamAzureOpenAIResponses: StreamFunction<
     stream,
     model,
     output,
+    context,
     options,
     resolveRequestModel: (requestModel) => {
       const { baseUrl } = resolveAzureConfig(requestModel, options);
@@ -97,6 +98,7 @@ export const streamAzureOpenAIResponses: StreamFunction<
       const messages = convertResponsesMessages(requestModel, context, AZURE_TOOL_CALL_PROVIDERS, {
         sessionId: options?.sessionId,
         authProfileId: options?.authProfileId,
+        mutableInput: Boolean(options?.onPayload),
         replayMode,
       });
 

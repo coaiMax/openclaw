@@ -1,7 +1,9 @@
 import path from "node:path";
+import { withNodeRuntimePath } from "../../../node-runtime-env.mjs";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveStateDir } from "../../config/paths.js";
 import { isBunRuntime } from "../../daemon/runtime-binary.js";
+import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { createLowDiskSpaceWarning } from "../../infra/disk-space.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { SqliteReadOnlyInspectionContentionError } from "../../infra/sqlite-readonly-worker-protocol.js";
@@ -28,6 +30,7 @@ import {
   resolveNpmLifecyclePolicyGate,
   type ResolvedGlobalInstallTarget,
 } from "../../infra/update-global.js";
+import { resolveNativePackageProjectRoot } from "../../infra/update-native-package-owner.js";
 import { createUpdatePreflightFailure } from "../../infra/update-preflight-details.js";
 import { isFailedUpdateStep, updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import {
@@ -69,7 +72,7 @@ import { assertUpdatePackageActivationAdmission } from "./update-command-package
 import { inspectNpmGlobalDestination } from "./update-command-package-destination.js";
 import { UnreportedUpdateAdmissionOutcome, type RefuseUpdate } from "./update-command-result.js";
 import { recordUpdateCommandTarget, type prepareUpdateCommand } from "./update-command-run.js";
-import type { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
+import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-context-types.js";
 import { resolveManagedServicePackageUpdatePlan } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
@@ -88,50 +91,6 @@ export async function resolveFreshUpdateMetadata(target: {
   );
   await target.refuseUpdate("target-metadata-preflight", failure.message, failure.failureFacts);
   return undefined;
-}
-
-/** Describe the selected plan without changing roots, runtime, or service authority. */
-function printManagedServicePackageUpdatePlan(params: {
-  rootRedirect: ManagedServiceRootRedirect | null;
-  serviceRoot?: string;
-  nodeRunner?: string;
-}): void {
-  const { rootRedirect, nodeRunner } = params;
-  if (rootRedirect) {
-    defaultRuntime.log(
-      theme.muted(`Targeting managed gateway service package root: ${rootRedirect.root}`),
-    );
-    defaultRuntime.log(
-      theme.warn(
-        `Shell OpenClaw root differs from the managed gateway service root: ${rootRedirect.previousRoot}`,
-      ),
-    );
-    defaultRuntime.log(
-      theme.muted(
-        `After the update, make sure \`${CLI_NAME}\` on PATH resolves to the managed service root or reinstall the gateway service from the shell install you want to use.`,
-      ),
-    );
-    if (nodeRunner) {
-      defaultRuntime.log(theme.muted(`Managed gateway service runtime: ${nodeRunner}`));
-    }
-  } else if (params.serviceRoot) {
-    defaultRuntime.log(
-      theme.muted(
-        `Updating this installation and rebinding the managed Gateway from ${params.serviceRoot} after ownership and runtime verification.`,
-      ),
-    );
-  } else if (nodeRunner) {
-    defaultRuntime.log(
-      theme.warn(
-        `Current runtime (${resolveNodeRunner()}) differs from the managed gateway service runtime (${nodeRunner}).`,
-      ),
-    );
-    defaultRuntime.log(
-      theme.muted(
-        "Using the managed service runtime for this update so the gateway can start after the upgrade.",
-      ),
-    );
-  }
 }
 
 export async function resolveUpdateCommandTarget(
@@ -174,6 +133,19 @@ export async function resolveUpdateCommandTarget(
           recordUpdateCommandTarget(opts.run, { step });
         }
       };
+      const recordNodeSecurityWarning = (warning: string) => {
+        recordPreflightStep({
+          name: "node-security-patch",
+          command: "inspect Node.js security patch level",
+          cwd: root,
+          durationMs: 0,
+          exitCode: 0,
+          warnings: [warning],
+        });
+      };
+      if (prepared.nodeSecurityWarning) {
+        recordNodeSecurityWarning(prepared.nodeSecurityWarning);
+      }
       const resolveMode = async (): Promise<UpdateRunResult["mode"]> => {
         // Policy/config refusals can precede target preparation. Inspect their owner too.
         return updateInstallKind === "git"
@@ -279,7 +251,7 @@ export async function resolveUpdateCommandTarget(
         !legacyConfigPlan &&
         !usesCandidateUpdateAdmission(opts, installKind)
       ) {
-        const failure = createUpdateConfigFailure(configSnapshot);
+        const failure = createUpdateConfigFailure(configSnapshot, configReadFailure);
         await refuseUpdate(failure.reason, failure.message, failure.failureFacts);
         return undefined;
       }
@@ -322,7 +294,7 @@ export async function resolveUpdateCommandTarget(
         updateInstallKind !== "package" &&
         usesCandidateUpdateAdmission(opts, installKind)
       ) {
-        const failure = createUpdateConfigFailure(configSnapshot);
+        const failure = createUpdateConfigFailure(configSnapshot, configReadFailure);
         await refuseUpdate(failure.reason, failure.message, failure.failureFacts);
         return undefined;
       }
@@ -379,7 +351,42 @@ export async function resolveUpdateCommandTarget(
         managedServiceNodeRunner = servicePlan.nodeRunner;
         root = managedServiceRootRedirect?.root ?? discoveredRoot;
         if (!opts.json) {
-          printManagedServicePackageUpdatePlan(servicePlan);
+          const { rootRedirect, nodeRunner } = servicePlan;
+          if (rootRedirect) {
+            defaultRuntime.log(
+              theme.muted(`Targeting managed gateway service package root: ${rootRedirect.root}`),
+            );
+            defaultRuntime.log(
+              theme.warn(
+                `Shell OpenClaw root differs from the managed gateway service root: ${rootRedirect.previousRoot}`,
+              ),
+            );
+            defaultRuntime.log(
+              theme.muted(
+                `After the update, make sure \`${CLI_NAME}\` on PATH resolves to the managed service root or reinstall the gateway service from the shell install you want to use.`,
+              ),
+            );
+            if (nodeRunner) {
+              defaultRuntime.log(theme.muted(`Managed gateway service runtime: ${nodeRunner}`));
+            }
+          } else if (servicePlan.serviceRoot) {
+            defaultRuntime.log(
+              theme.muted(
+                `Updating this installation and rebinding the managed Gateway from ${servicePlan.serviceRoot} after ownership and runtime verification.`,
+              ),
+            );
+          } else if (nodeRunner) {
+            defaultRuntime.log(
+              theme.warn(
+                `Current runtime (${resolveNodeRunner()}) differs from the managed gateway service runtime (${nodeRunner}).`,
+              ),
+            );
+            defaultRuntime.log(
+              theme.muted(
+                "Using the managed service runtime for this update so the gateway can start after the upgrade.",
+              ),
+            );
+          }
         }
         packageUpdateNodeRunner =
           managedServiceRoot && !process.versions.bun
@@ -453,6 +460,10 @@ export async function resolveUpdateCommandTarget(
           pkgOwnership,
         });
         packageInstallEnv = await createGlobalInstallEnv(undefined, packageInstallTarget);
+        if (packageUpdateNodeRunner) {
+          // Candidate staging runs npm lifecycle scripts before the runtime preflight rebinds PATH.
+          packageInstallEnv = withNodeRuntimePath(packageInstallEnv, packageUpdateNodeRunner);
+        }
         if (packageInstallTarget.manager === "npm") {
           const destination = await inspectNpmGlobalDestination(root, packageInstallTarget);
           if (destination.kind !== "owned" && destination.kind !== "empty") {
@@ -597,6 +608,41 @@ export async function resolveUpdateCommandTarget(
           endedAtMs: Date.now(),
         },
       });
+      if (
+        updateInstallKind === "package" &&
+        !opts.dryRun &&
+        !packageAlreadyCurrent &&
+        canResolveRegistryVersionForPackageTarget(packageInstallSpec ?? tag) &&
+        packageRuntimeTarget?.nodeEngine
+      ) {
+        // Candidate admission can stage before the activation runtime check.
+        const runtime = await resolvePackageRuntimePreflight({
+          engineOnly: true,
+          channel,
+          requestedChannel,
+          target: packageRuntimeTarget,
+          root,
+          nodeRunner: managedServiceNodeRunner ?? packageUpdateNodeRunner,
+          timeoutMs: updateStepTimeoutMs,
+        });
+        if (!runtime.ok) {
+          await refuseUpdate(
+            "preflight-node-runtime-incompatible",
+            runtime.error,
+            runtime.failureFacts,
+            runtime.recoverySteps,
+          );
+          return undefined;
+        }
+        if (
+          runtime.value.nodeSecurityWarning &&
+          runtime.value.nodeSecurityWarning !== prepared.nodeSecurityWarning
+        ) {
+          warn(`SECURITY WARNING: ${runtime.value.nodeSecurityWarning}`);
+          recordNodeSecurityWarning(runtime.value.nodeSecurityWarning);
+        }
+      }
+
       // No-op updates need no candidate snapshot; package-space warnings remain advisory above.
       if (
         updateInstallKind === "package" &&
@@ -607,10 +653,16 @@ export async function resolveUpdateCommandTarget(
       ) {
         const env = opts.run?.env ?? process.env;
         const source = await readUpdateCandidateSource(env, legacyConfigPlan);
+        const backupProject =
+          packageInstallTarget &&
+          resolveNativePackageProjectRoot(packageInstallTarget, packageInstallEnv ?? env);
         const snapshot = await assessInitialUpdateSnapshotCapacity({
           config: source.config,
           stateDir: resolveStateDir(env),
           env,
+          backupDirectory: backupProject
+            ? path.dirname(resolvePathViaExistingAncestorSync(backupProject))
+            : (packageInstallTarget?.globalRoot ?? path.dirname(root)),
         });
         opts.run?.executorFence?.assertCurrent();
         recordPreflightStep(snapshot);

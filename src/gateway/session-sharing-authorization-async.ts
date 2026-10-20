@@ -8,7 +8,7 @@ import { SessionCanonicalKeyMigrationRequiredError } from "../config/sessions/se
 import { releaseSessionSourceAuthorities } from "../config/sessions/session-source-authority.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { errorShapeFromError } from "./error-shape.js";
-import { isSessionTargetMethod } from "./session-method-policy.js";
+import { sessionMethodDatabaseAdmission, isSessionTargetMethod } from "./session-method-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { withReadySessionRows } from "./session-row-prepared-read.js";
@@ -132,7 +132,12 @@ export async function resolveSessionMutationAuthorizationAsync(
       storageTarget: import("./session-sharing-read.js").PreparedMutationSharing["storageTarget"];
     })[] = [];
     for (const target of uniqueTargets) {
-      const input = resolveRequestedSessionAgentId(cfg, target.sessionKey, target.agentId);
+      const input = resolveRequestedSessionAgentId(
+        cfg,
+        target.sessionKey,
+        target.agentId,
+        params.databaseAdmission ?? sessionMethodDatabaseAdmission(params.method),
+      );
       if (!input.ok) {
         release();
         return { error: input.error };
@@ -142,6 +147,7 @@ export async function resolveSessionMutationAuthorizationAsync(
         sessionKey: target.sessionKey,
         agentId: input.agentId,
         allowMissing: true,
+        followLifecycle: params.method === "chat.send",
       });
       reads.push(retained);
       const initialFacts = retained.readCurrent(cfg);
@@ -199,6 +205,7 @@ export async function resolveSessionMutationAuthorizationAsync(
                 currentCfg,
                 target.sessionKey,
                 target.agentId,
+                "read",
               );
               return agent.ok ? [{ key: target.sessionKey, agentId: agent.agentId }] : [];
             }),
@@ -257,6 +264,7 @@ export async function resolveSessionMutationAuthorizationAsync(
           const retained = retainPreparedSessionSharingFacts({
             databaseIdentity: identity.key,
             sessionKey: created.sessionKey,
+            followLifecycle: params.method === "chat.send",
             entry: projectSessionSharingEntry(created.entry),
             membership: new Set(),
           });

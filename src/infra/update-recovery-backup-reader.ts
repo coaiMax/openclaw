@@ -57,39 +57,27 @@ export async function withVerifiedUpdateRecoveryBackup<T>(
     if (manifest.entries.length > 4096) {
       throw new Error("Preservation inspection exceeds its 4096-resource bound.");
     }
-    const verify = async () => {
-      for (const entry of manifest.entries) {
-        if (entry.kind !== "file") {
-          continue;
-        }
-        const pathname = path.join(ref.directory, entry.archivePath);
-        if (entry.sqlite) {
-          for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
-            if (await lstatIfExists(`${pathname}${suffix}`, "ENOENT")) {
-              throw new Error(
-                `Preservation requires a consolidated SQLite payload: ${entry.sourcePath}`,
-              );
-            }
+    for (const entry of manifest.entries) {
+      if (entry.kind !== "file") {
+        continue;
+      }
+      const pathname = path.join(ref.directory, entry.archivePath);
+      if (entry.sqlite) {
+        for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+          if (await lstatIfExists(`${pathname}${suffix}`, "ENOENT")) {
+            throw new Error(
+              `Preservation requires a consolidated SQLite payload: ${entry.sourcePath}`,
+            );
           }
         }
-        const actual = await fileDigest(pathname);
-        if (actual.sha256 !== entry.sha256 || actual.size !== entry.size) {
-          throw new Error(`Preservation payload does not match its manifest: ${entry.sourcePath}`);
-        }
       }
-      await pin.assertCurrent();
-    };
-    await verify();
-    const result = await inspect(manifest);
-    await verify();
-    const source = await safeRoot(ref.directory, { symlinks: "reject", hardlinks: "reject" });
-    if (
-      sha256Hex(await source.readBytes("manifest.json", { maxBytes: MAX_MANIFEST_BYTES })) !==
-      ref.manifestSha256
-    ) {
-      throw new Error("Preservation manifest changed during inspection.");
+      const actual = await fileDigest(pathname);
+      if (actual.sha256 !== entry.sha256 || actual.size !== entry.size) {
+        throw new Error(`Preservation payload does not match its manifest: ${entry.sourcePath}`);
+      }
     }
-    return result;
+    await pin.assertCurrent();
+    return await inspect(manifest);
   });
 }
 
@@ -557,37 +545,28 @@ export async function readUpdateRecoveryBackups(): Promise<UpdateRecoveryBackupR
       continue;
     }
     for (const captureId of await fs.readdir(store)) {
-      if (captureId === UPDATE_CAPTURE_PRIVACY_MARKER) {
-        continue;
-      }
       const directory = path.join(store, captureId);
       const entry = await lstatIfExists(directory, "ENOENT");
-      // Doctor's schema archives share this root but are not recovery captures.
-      if (entry?.isFile() && /^agent-schema-.+\.tar\.gz$/u.test(captureId)) {
-        continue;
-      }
-      const manifestPath = path.join(directory, "manifest.json");
-      const manifestEntry = entry?.isDirectory()
-        ? await lstatIfExists(manifestPath, "ENOENT")
-        : undefined;
-      // Rehearsal scratch uses this prefix on every platform. A present manifest
-      // still belongs to recovery validation, even under a scratch-like name.
+      // Producers mark capture directories before staging payloads. Other entries
+      // (including OS metadata, schema archives, and rehearsal scratch) are unrelated.
       if (
-        entry?.isDirectory() &&
-        /^openclaw-update-canary-.+$/u.test(captureId) &&
-        !manifestEntry
+        !entry?.isDirectory() ||
+        !(
+          await lstatIfExists(path.join(directory, UPDATE_CAPTURE_PRIVACY_MARKER), "ENOENT")
+        )?.isFile()
       ) {
         continue;
       }
+      const manifestPath = path.join(directory, "manifest.json");
+      const manifestEntry = await lstatIfExists(manifestPath, "ENOENT");
       if (
-        entry?.isDirectory() &&
         /^[a-zA-Z0-9_-]{1,128}$/u.test(captureId) &&
         (!manifestEntry || (await hasPendingUpdateRecoverySeal(directory)))
       ) {
         result.push({ kind: "incomplete", directory });
         continue;
       }
-      if (!entry?.isDirectory() || !manifestEntry?.isFile()) {
+      if (!manifestEntry?.isFile()) {
         throw new Error(
           `Unresolved update capture ${directory} has incomplete publication. Inspection only: openclaw update status --json; npx openclaw@latest doctor --fix. Earlier captures are retained.`,
         );

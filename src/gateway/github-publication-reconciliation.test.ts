@@ -4,14 +4,21 @@ import {
   commandResult,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  persistPublicationTestSession,
+  root,
 } from "./github-publication.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { withinTest } from "../../test/helpers/promise.js";
+import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import * as sqliteQueries from "../infra/kysely-sync.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
+import { createRealPublicationWorkspace } from "./github-publication-git.test-support.js";
 import {
+  createRequesterPolicyFixture,
+  capturePublicationGuest,
   createRequesterPublicationFixture,
   holdWorkerTurn,
 } from "./github-publication-requester.test-support.js";
@@ -72,6 +79,117 @@ installGitHubPublicationTestHarness({
   realWorktree: true,
 });
 
+it("recovers independent worktrees while preserving each worktree's publication order", async ({
+  signal,
+}) => {
+  vi.stubEnv("GIT_AUTHOR_DATE", "2026-10-27T00:00:00Z");
+  vi.stubEnv("GIT_COMMITTER_DATE", "2026-10-27T00:00:00Z");
+  const first = await fixture("local");
+  const firstWorktree = mocks.findWorktree("session", first.session.sessionKey);
+  const firstTransport = mocks.runCommand.getMockImplementation()!;
+  const secondSession = {
+    sessionId: "session-publication",
+    sessionKey: "agent:main:dashboard:independent-publication",
+  };
+  await persistPublicationTestSession(secondSession.sessionKey);
+  const secondRoot = path.join(root, "independent");
+  await fs.mkdir(secondRoot);
+  mocks.findWorktree.mockReturnValue({
+    ...firstWorktree,
+    id: "independent-worktree",
+    ownerId: secondSession.sessionKey,
+    branch: "openclaw/independent-publication",
+    repoFingerprint: "independent-fingerprint",
+  });
+  await createRealPublicationWorkspace({
+    root: secondRoot,
+    branch: "openclaw/independent-publication",
+    sessionKey: secondSession.sessionKey,
+    realWorktree: true,
+    mocks,
+    commandResult,
+  });
+  const secondWorktree = mocks.findWorktree("session", secondSession.sessionKey);
+  const { id: secondWorktreeId, branch, repoRoot } = secondWorktree;
+  await upsertSessionEntryCore(
+    { agentId: "main", sessionKey: secondSession.sessionKey },
+    { worktree: { id: secondWorktreeId, branch, repoRoot } },
+  );
+  const secondTransport = mocks.runCommand.getMockImplementation()!;
+  const second = await createRequesterPolicyFixture(secondSession);
+  mocks.findWorktree.mockImplementation((_kind, ownerId) =>
+    ownerId === first.session.sessionKey ? firstWorktree : secondWorktree,
+  );
+  mocks.findWorktreeById.mockImplementation((id) =>
+    id === firstWorktree.id ? firstWorktree : secondWorktree,
+  );
+  mocks.resolveRepository.mockImplementation(async (cwd) => {
+    const worktree = cwd === first.local!.cwd ? firstWorktree : secondWorktree;
+    return {
+      checkoutRoot: cwd,
+      repoRoot: cwd,
+      fingerprint: worktree.repoFingerprint,
+      originUrl: "git@github.com:openclaw/openclaw.git",
+    };
+  });
+  const firstDispatched = Promise.withResolvers<void>();
+  const independentDispatched = Promise.withResolvers<void>();
+  const firstResponse = Promise.withResolvers<void>();
+  const titles: string[] = [];
+  mocks.runCommand.mockImplementation(
+    async (argv: string[], options?: { cwd?: string; input?: string }) => {
+      if (isPullCreation(argv)) {
+        const title = JSON.parse(options!.input!).title as string;
+        titles.push(title);
+        if (title === "first") {
+          firstDispatched.resolve();
+          await firstResponse.promise;
+        } else if (title === "independent") {
+          independentDispatched.resolve();
+        }
+      }
+      return await (options?.cwd === first.local!.cwd ? firstTransport : secondTransport)(
+        argv,
+        options,
+      );
+    },
+  );
+  for (const session of [first.session, secondSession]) {
+    await first.placements.startDispatch({
+      ...session,
+      agentId: "main",
+      executionMode: "worker-turn",
+    });
+  }
+  const firstGuest = await capturePublicationGuest(first);
+  const secondGuest = await capturePublicationGuest(second);
+  const requests = [
+    await first.coordinator.requestForSessionV2(first.request("first", firstGuest.requester)),
+    await first.coordinator.requestForSessionV2(first.request("next", firstGuest.requester)),
+    await first.coordinator.requestForSessionV2({
+      ...first.request("independent", secondGuest.requester),
+      sessionKey: secondSession.sessionKey,
+    }),
+  ];
+  expect(requests.map(({ status }) => status)).toEqual(["requested", "requested", "requested"]);
+  const recovery = first.coordinator.resumeSessionRequests();
+  try {
+    await withinTest(Promise.race([firstDispatched.promise, recovery]), signal);
+    await withinTest(Promise.race([independentDispatched.promise, recovery]), signal);
+    expect(titles).toContain("independent");
+    expect(titles).not.toContain("next");
+  } finally {
+    firstResponse.resolve();
+    await recovery;
+  }
+  for (const { requestId } of requests) {
+    expect(first.readReceipt(requestId)?.status).toBe("published");
+  }
+  const calls = mocks.runCommand.mock.calls.length;
+  await first.restart().resumeSessionRequests();
+  expect(mocks.runCommand.mock.calls.slice(calls).filter(([argv]) => argv[0] === "gh")).toEqual([]);
+});
+
 it.each(["local", "repository"] as const)(
   "settles the accepted %s publication before stopping recovery between requests",
   async (backend) => {
@@ -115,10 +233,15 @@ it.each(["local", "repository"] as const)(
 it.each([
   { backend: "local", mode: "paged" },
   { backend: "local", mode: "interrupted" },
+  { backend: "local", mode: "interrupted-authorized" },
+  { backend: "local", mode: "interrupted-authorized-edits" },
+  { backend: "local", mode: "interrupted-authorized-deleted" },
+  { backend: "local", mode: "interrupted-authorized-merged" },
   { backend: "repository", mode: "paged" },
   { backend: "repository", mode: "interrupted" },
+  { backend: "repository", mode: "interrupted-authorized" },
 ] as const)(
-  "reconciles a $mode $backend update after authority ends",
+  "reconciles a $mode $backend update when recovering its accepted publication",
   async ({ backend, mode }) => {
     const { f, first, pullRequest, transport, observePush } =
       await prepareExistingPullRequest(backend);
@@ -128,6 +251,8 @@ it.each([
       state: "closed",
       body: `<!-- openclaw-publication:earlier-closed-${index} -->`,
     }));
+    let branchDeleted = false;
+    let acceptedMergeCommit: string | undefined;
     let pushed = false,
       readbackAvailable = false,
       recoveryLookup = false,
@@ -136,6 +261,16 @@ it.each([
     const hostScans = vi.spyOn(sqliteQueries, "iterateSqliteQuerySync");
     let recoveryScanStart = 0;
     mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
+      if (branchDeleted && argv.includes("ls-remote")) {
+        return commandResult("");
+      }
+      if (
+        acceptedMergeCommit &&
+        readbackAvailable &&
+        argv.includes("repos/openclaw/openclaw/git/ref/heads/main")
+      ) {
+        return commandResult(JSON.stringify({ ref: "refs/heads/main", sha: acceptedMergeCommit }));
+      }
       if (argv.includes("state=all")) {
         recoveryLookup ||= pushed;
         if (mode === "paged") {
@@ -154,15 +289,22 @@ it.each([
       }
       const response = await transport(argv, options);
       if (argv.includes("push") || argv.includes("graphql")) {
-        await observePush();
+        if (pullRequest.state === "open") {
+          await observePush();
+        }
         if (mode === "paged") {
           await f.revoke();
         }
         pushed = true;
+        branchDeleted = false;
         recoveryScanStart = hostScans.mock.calls.length;
-        acceptedWrites = [...f.externalWrites];
+        if (!readbackAvailable) {
+          acceptedWrites = [...f.externalWrites];
+        }
       }
-      return response;
+      return isPullCreation(argv) && readbackAvailable
+        ? commandResult(JSON.stringify({ html_url: first.url.replace(/\d+$/u, "125201") }))
+        : response;
     });
     const idempotencyKey = `${mode}-update`;
     const publication = f.coordinator.requestForSessionV2(f.request(idempotencyKey, f.guest));
@@ -210,6 +352,73 @@ it.each([
       acceptedWrites = [...f.externalWrites];
       // Closing the known PR cannot undo an accepted update.
       pullRequest.state = "closed";
+      if (mode.startsWith("interrupted-authorized")) {
+        if (!f.local) {
+          readbackAvailable = true;
+          const restarted = f.restart();
+          await restarted.resumeSessionRequests();
+          expect(f.externalWrites).toEqual(acceptedWrites);
+          expect(await restarted.readAsync(requestId)).toMatchObject(
+            published(first.url, pullRequest.headSha),
+          );
+          expect(await restarted.readAsync(first.requestId)).toEqual(first);
+          return;
+        }
+        const { cwd, git } = f.local;
+        const acceptedHead = pullRequest.headSha;
+        branchDeleted = mode === "interrupted-authorized-deleted";
+        if (mode === "interrupted-authorized-merged") {
+          acceptedMergeCommit = await git(
+            "commit-tree",
+            await git("rev-parse", `${pullRequest.headSha}^{tree}`),
+            "-p",
+            await git("rev-parse", "main"),
+            "-p",
+            pullRequest.headSha,
+            "-m",
+            "Accepted PR merge",
+          );
+        }
+        const laterEdits = mode === "interrupted-authorized-edits";
+        if (laterEdits) {
+          await fs.writeFile(path.join(cwd, "artifact.txt"), "committed later work\n");
+          await git("add", "artifact.txt");
+          await git("commit", "-m", "Later saved work");
+          await fs.writeFile(path.join(cwd, "artifact.txt"), "staged later work\n");
+          await git("add", "artifact.txt");
+          await fs.writeFile(path.join(cwd, "artifact.txt"), "saved later work\n");
+        }
+        await fs.writeFile(path.join(cwd, "untracked.txt"), "saved untracked work\n");
+        const snapshot = () =>
+          Promise.all([
+            git("rev-parse", "HEAD"),
+            fs.readFile(path.join(cwd, ".git", "index")),
+            fs.readFile(path.join(cwd, "artifact.txt")),
+            fs.readFile(path.join(cwd, "untracked.txt")),
+          ]);
+        const saved = await snapshot();
+        readbackAvailable = true;
+        const restarted = f.restart();
+        await restarted.resumeSessionRequests();
+        expect(f.externalWrites).toEqual(acceptedWrites);
+        expect(await restarted.readAsync(requestId)).toMatchObject(
+          published(first.url, pullRequest.headSha),
+        );
+        expect(await snapshot()).toEqual(saved);
+        expect(await restarted.readAsync(first.requestId)).toEqual(first);
+        const next = await restarted.requestForSessionV2(f.request("explicit-new-pr", f.guest));
+        expect(next).toMatchObject(
+          published(first.url.replace(/\d+$/u, "125201"), await git("rev-parse", "HEAD")),
+        );
+        expect(next.requestId).not.toBe(requestId);
+        expect(f.publishedTitles).toEqual(["first-publication", "explicit-new-pr"]);
+        expect(await git("show", "HEAD:artifact.txt")).toBe(
+          laterEdits ? "saved later work" : "accepted second publication",
+        );
+        expect(await git("merge-base", saved[0], "HEAD")).toBe(saved[0]);
+        expect(pullRequest).toMatchObject({ state: "closed", headSha: acceptedHead });
+        return;
+      }
       await f.revoke();
       expect(f.guest.assertCurrent).toThrow();
       readbackAvailable = true;

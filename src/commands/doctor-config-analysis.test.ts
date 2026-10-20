@@ -145,6 +145,49 @@ describe("doctor config analysis helpers", () => {
     expect(stripUnknownConfigKeys(input as never)).toEqual({ config, removed: [removed] });
   });
 
+  it.each(["personal", "corporate"])(
+    "removes the unreleased %s preset without expanding or erasing explicit policy",
+    (preset) => {
+      const security = { audit: { suppressions: [{ checkId: "example.check" }] } };
+      const tools = { exec: { mode: "deny" as const }, fs: { workspaceOnly: true } };
+      const input = { security: { ...security, preset }, tools };
+      expect(stripUnknownConfigKeys(input)).toEqual({
+        config: { security, tools },
+        removed: ["security.preset"],
+      });
+    },
+  );
+
+  it("preserves heartbeat migration input while stripping unrelated unknown keys", () => {
+    const config = {
+      agents: {
+        defaults: { heartbeat: { every: "30m", activeHours: { start: "09:00", end: "17:00" } } },
+        entries: { ops: { heartbeat: { every: "1h", target: "telegram", to: "123" } } },
+      },
+      channels: { defaults: { heartbeatVisibility: { showAlerts: false } } },
+      unexpected: true,
+    };
+
+    const result = stripUnknownConfigKeys(config);
+
+    expect(result.removed).toEqual(["unexpected"]);
+    expect(result.config).toEqual({
+      agents: {
+        defaults: { heartbeat: { every: "30m", activeHours: { start: "09:00", end: "17:00" } } },
+        entries: { ops: { heartbeat: { every: "1h", target: "telegram", to: "123" } } },
+      },
+      channels: { defaults: { heartbeatVisibility: { showAlerts: false } } },
+    });
+  });
+
+  it("preserves include syntax at agent defaults while stripping unknown keys", () => {
+    const agents = { defaults: { $include: "./agent-defaults.json5" } };
+    const result = stripUnknownConfigKeys({ agents, unexpected: true } as never);
+
+    expect(result.removed).toEqual(["unexpected"]);
+    expect(result.config).toEqual({ agents });
+  });
+
   it.each([undefined, "1"])(
     "cleans unowned keys during updates (post-core=%s), preserving deferred inputs",
     (postCore) => {
