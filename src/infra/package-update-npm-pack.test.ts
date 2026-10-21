@@ -26,7 +26,10 @@ describe("prepareNpmGitSourceInstallSpec", () => {
   });
 
   it("removes the pack directory when the step runner throws", async () => {
-    const installTarget = { manager: "npm", command: "npm" } as unknown as ResolvedGlobalInstallTarget;
+    const installTarget = {
+      manager: "npm",
+      command: "npm",
+    } as unknown as ResolvedGlobalInstallTarget;
     const before = new Set(await listPackDirs(tmpDir));
 
     await expect(
