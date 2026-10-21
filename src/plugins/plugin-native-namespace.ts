@@ -332,7 +332,10 @@ export function capturePluginNativeNamespace(params: {
     const digest = hashPluginSourceFile(filename, capturedRoot);
     const prior = previous?.members[relative];
     if (
-      stat !== pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) ||
+      !pluginSourceIdentityChangedOnlyByCtime(
+        stat,
+        pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })),
+      ) ||
       (prior && (digest.contentHash !== prior.contentHash || digest.sizeBytes !== prior.sizeBytes))
     ) {
       throw new Error("Native plugin companion changed during admission");
@@ -360,8 +363,7 @@ export function capturePluginNativeNamespace(params: {
         !current ||
         current.source !== member.source ||
         (current.identity !== member.identity &&
-          (!(managed || previous) ||
-            !pluginSourceIdentityChangedOnlyByCtime(member.identity, current.identity)))
+          !pluginSourceIdentityChangedOnlyByCtime(member.identity, current.identity))
       );
     })
   ) {
@@ -427,9 +429,15 @@ export function finishPluginNativeNamespace(fact: PluginNativeNamespaceFact): vo
     }
     const filename = pluginNativeNamespaceMemberPath(fact, relative);
     const content = hashPluginSourceFile(filename, pluginNativeNamespaceBoundary(fact));
+    // Digesting the companion reads it, which can bump only ctime (a Windows Endpoint-DLP
+    // EA stamp, Code Integrity cache, or a hard link); size, mtime, inode and bytes are
+    // unchanged, so tolerate a ctime-only delta exactly as the copy pass already does.
     if (
       content.sizeBytes !== member.sizeBytes ||
-      pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })) !== member.capturedIdentity
+      !pluginSourceIdentityChangedOnlyByCtime(
+        member.capturedIdentity,
+        pluginSourceStatIdentity(fs.statSync(filename, { bigint: true })),
+      )
     ) {
       throw new Error("Native plugin companion changed before admission completed");
     }
