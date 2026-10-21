@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatErrorStackWithMessage } from "@openclaw/normalization-core/error-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
@@ -10,6 +11,7 @@ import type { SessionEntryCurrentFacts } from "../../config/sessions/session-ent
 import { withSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
 import { preparePhysicalSessionStorePath } from "../../config/sessions/session-store-path.js";
+import { bindInProcessSessionRun } from "../../gateway/in-process-session-run.js";
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
@@ -42,8 +44,10 @@ import { scheduleMainSessionRecoveryPendingTarget } from "./main-session-recover
 import type { MainSessionRecoveryReservation } from "./main-session-recovery-state.js";
 import { commitMainSessionRecovery } from "./main-session-recovery-store.js";
 import {
+  reconcileAcceptedRestartRecoveryCancellation,
   rollbackRestartRecoveryReservation,
   settleAcceptedRestartRecovery,
+  settleRejectedRestartRecovery,
 } from "./main-session-restart-dispatch-settlement.js";
 import {
   dispatchRestartRecoveryUntilStarted,
@@ -52,7 +56,6 @@ import {
 } from "./main-session-restart-dispatch-start.js";
 import type { ResumeMainSessionParams } from "./main-session-restart-dispatch.types.js";
 import {
-  announceRestartRecoveryResumption,
   hasRestartRecoveryMessageActionAuthority,
   requiresRestartRecoveryMessageActionAuthority,
   prepareRestartRecoveryDeliveryCurrent,
@@ -142,9 +145,8 @@ export async function resumeMainSession(
       },
     );
   }
-  const isCurrent = () => {
-    return source ? matchesRequester(source.readCurrent()) : retained?.isCurrent() === true;
-  };
+  const isCurrent = () =>
+    source ? matchesRequester(source.readCurrent()) : retained?.isCurrent() === true;
   if (!isCurrent()) {
     return "skipped";
   }
@@ -253,6 +255,7 @@ async function resumeMainSessionWithinAdmission(
     expectedRecoveryRunId: recoveryRunId,
     expectedRecoverySourceRunId: sourceRunId,
     expectedSessionId: params.entry.sessionId,
+    pendingFinalDelivery: params.entry.pendingFinalDelivery,
     lifecycleGeneration,
     sessionKeys: Array.from(new Set([dispatchSessionKey, params.sessionKey])),
     shouldContinue: params.shouldContinue,
@@ -260,6 +263,7 @@ async function resumeMainSessionWithinAdmission(
   let reservation: MainSessionRecoveryReservation | undefined;
   let ownedInput: SessionControllerInput | undefined;
   let controllerInput = params.controllerInput;
+  let replyOwned = false;
   let dispatchStarted = false;
   let dispatchAccepted = false;
   let executionStarted = false;
@@ -489,7 +493,13 @@ async function resumeMainSessionWithinAdmission(
       ? { ...target, sessionId: params.entry.sessionId, sourceRunId, recoveryRunId }
       : undefined;
     const dispatchOutcome = await dispatchRestartRecoveryUntilStarted({
-      agentParams,
+      // Preserve own-session admission without granting broader operator scopes.
+      agentParams: bindInProcessSessionRun(agentParams, {
+        sessionKey: dispatchSessionKey,
+        sessionId: params.entry.sessionId,
+        lifecycleRevision: params.entry.lifecycleRevision ?? null,
+        runId: recoveryRunId,
+      }),
       controllerInput,
       gatewayRuntime: params.gatewayRuntime,
       restartRecoveryRequesterTarget: params.entry.restartRecoveryRequesterSource
@@ -508,6 +518,10 @@ async function resumeMainSessionWithinAdmission(
         runWithAgentToolSourceExecutionScope(params.completionSource, async () => {
           params.completionSource?.();
         }),
+      onRecoveryInputTransferred: () => {
+        replyOwned = true;
+        reservation = undefined;
+      },
       onSettled: () => {
         onDispatchSettled();
         dispatchSettled = true;
@@ -552,6 +566,7 @@ async function resumeMainSessionWithinAdmission(
       return "skipped";
     }
     if (
+      !replyOwned &&
       !(await settleAcceptedRestartRecovery({
         ...settlementTarget,
         terminalStatus,
@@ -563,7 +578,13 @@ async function resumeMainSessionWithinAdmission(
       return "skipped";
     }
     const resumeResult = terminalStatus ? "settled" : "started";
-    if (resumeResult === "started" && agentParams.deliver && deliveryContext && taskRemainsOwed()) {
+    if (
+      !replyOwned &&
+      resumeResult === "started" &&
+      agentParams.deliver &&
+      deliveryContext &&
+      taskRemainsOwed()
+    ) {
       deliveryCurrent = await prepareRestartRecoveryDeliveryCurrent({
         ...target,
         storePath: requesterStorePath,
@@ -576,7 +597,7 @@ async function resumeMainSessionWithinAdmission(
         shouldContinue: params.shouldContinue,
       }).catch((error: unknown) => {
         log.warn(
-          `failed to prepare restart recovery notice ${params.sessionKey}: ${String(error)}`,
+          `failed to prepare restart recovery typing ${params.sessionKey}: ${String(error)}`,
         );
         return undefined;
       });
@@ -591,19 +612,6 @@ async function resumeMainSessionWithinAdmission(
           });
           retainDeliveryCurrent = stopTyping !== undefined;
         }
-        await announceRestartRecoveryResumption({
-          ...target,
-          isCurrent: (cfg) => !dispatchSettled && taskRemainsOwed() && isDeliveryCurrent(cfg),
-          sessionKey: dispatchSessionKey,
-          sessionId: params.entry.sessionId,
-          recoveryRunId,
-          lifecycleGeneration,
-          deliveryContext,
-          cfg: params.cfg,
-          shouldContinue: () =>
-            !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
-          gatewayRuntime: params.gatewayRuntime,
-        });
       }
     }
     log.info(
@@ -613,26 +621,28 @@ async function resumeMainSessionWithinAdmission(
     );
     return resumeResult;
   } catch (error) {
-    const explicitlyRejected = error instanceof GatewayClientRequestError && !dispatchAccepted;
-    if (
-      dispatchAccepted &&
-      !executionStarted &&
-      (!preStartAbortAttempted || preStartAbortConfirmed) &&
-      params.shouldContinue?.() !== false
-    ) {
-      await repairAcceptedRecovery();
-    } else if (
-      dispatchAccepted &&
-      !executionStarted &&
-      preStartAbortAttempted &&
-      !preStartAbortConfirmed &&
-      params.shouldContinue?.() !== false
-    ) {
-      log.warn(
-        `restart recovery execution start timed out without confirmed cancellation: ${params.sessionKey}`,
-      );
+    if (replyOwned) {
+      // The atomic input admission retired our claim. The ordinary reply owner records
+      // cancellation/failure; restoring the old claim would replay an already accepted input.
+      log.warn("ordinary reply recovery failed for " + params.sessionKey + ": " + String(error));
+      return "failed";
     }
+    const explicitlyRejected = error instanceof GatewayClientRequestError && !dispatchAccepted;
     try {
+      const unconfirmedStartTimeout = await reconcileAcceptedRestartRecoveryCancellation({
+        controllerInput,
+        dispatchAccepted,
+        executionStarted,
+        preStartAbortAttempted,
+        preStartAbortConfirmed,
+        repairAcceptedRecovery,
+        shouldContinue: params.shouldContinue,
+      });
+      if (unconfirmedStartTimeout) {
+        log.warn(
+          `restart recovery execution start timed out without confirmed cancellation: ${params.sessionKey}`,
+        );
+      }
       if (
         dispatchStarted &&
         (!explicitlyRejected || controllerInput?.abortSignal.aborted) &&
@@ -642,8 +652,6 @@ async function resumeMainSessionWithinAdmission(
           recoveryRunId,
           params.gatewayRuntime,
         );
-        // Stop can revoke operator admission before acceptance. Reconcile its
-        // recorded cancellation without treating other authority rejections as accepted work.
         if (
           terminalStatus &&
           (!explicitlyRejected || terminalStatus === "cancelled") &&
@@ -692,8 +700,18 @@ async function resumeMainSessionWithinAdmission(
       log.info(`stopped interrupted main session resend before execution: ${params.sessionKey}`);
       return "settled";
     }
+    const rejected = await settleRejectedRestartRecovery({
+      ...params,
+      ...target,
+      error,
+      dispatchAccepted,
+      rollback,
+    });
+    if (rejected) {
+      return rejected;
+    }
     log.warn(
-      `failed to resume interrupted main session ${params.sessionKey}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+      `failed to resume interrupted main session ${params.sessionKey}: ${error instanceof Error ? formatErrorStackWithMessage(error) : String(error)}`,
     );
     return "failed";
   } finally {

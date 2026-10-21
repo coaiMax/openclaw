@@ -12,6 +12,8 @@ title: "Usage tracking"
 - Human-readable quota-window output is normalized to `X% left`, even when a provider reports consumed quota, remaining quota, or only raw counts. Providers without resettable quota windows show provider summary text instead (for example a balance).
 - Session-level `/status` and the `session_status` tool fall back to the session's transcript log when the live session snapshot is missing token/model data. That fallback fills missing token/cache counters, can recover the active runtime model label, and prefers the larger prompt-oriented total when session metadata is missing or smaller (`totalTokensFresh !== true`, zero, or below the transcript-derived value). Nonzero live values always win over the fallback.
 
+Provider usage is cached for 60 seconds; set `models.usage.cacheTtlMs` to change this (`0` disables reuse).
+
 ## Where it shows up
 
 - `/status` in chats: status card with session tokens and estimated cost (API key models only). Provider usage shows for the **current model provider** when available, as a normalized `X% left` window or provider summary text.
@@ -88,6 +90,10 @@ backfill yields between completed transcripts after ten seconds of scanning or
 inventory can take longer. Transcripts
 remain the source of truth. Detailed reports retain exact timestamp boundaries and the recorded
 order of floating-point cost additions.
+
+Background refresh budgets use elapsed time, so wall-clock corrections do not
+extend the quiet period or retry delays. Report dates and recorded timestamps
+still follow the wall clock.
 
 ## Usage date ranges
 

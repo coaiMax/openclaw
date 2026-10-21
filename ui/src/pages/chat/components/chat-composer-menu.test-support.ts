@@ -1,9 +1,10 @@
 import { vi } from "vitest";
 import type { ToolsEffectiveResult } from "../../../api/types.ts";
 import type { McpServerSummary } from "../../../lib/config/mcp-servers.ts";
+import type { ChatComposerCapabilityMenuProps } from "../composer-capability-types.ts";
 import { createChatAttachmentInputHandle } from "./chat-attachment-inputs.ts";
 import type {
-  ChatComposerCapabilityMenuProps,
+  ChatComposerCapabilityMenuSource,
   ChatComposerPlusMenuProps,
 } from "./chat-composer-plus-menu.types.ts";
 
@@ -25,12 +26,11 @@ export function makeMenu(
 
 export function makeCapabilities(
   overrides: Partial<ChatComposerCapabilityMenuProps> = {},
-): ChatComposerCapabilityMenuProps {
-  return {
+): ChatComposerCapabilityMenuSource {
+  const capability: ChatComposerCapabilityMenuProps = {
     basePath: "/control",
     skills: [],
-    skillsLoading: false,
-    skillsError: false,
+    skillsRead: null,
     mcpServers: [],
     toolsEffectiveResult: null,
     toolsEffectiveLoading: false,
@@ -45,6 +45,7 @@ export function makeCapabilities(
     onNavigate: vi.fn(),
     ...overrides,
   };
+  return { read: () => capability };
 }
 
 export function docsServer(enabled: boolean): McpServerSummary {

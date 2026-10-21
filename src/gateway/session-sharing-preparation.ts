@@ -28,6 +28,7 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import {
   isSessionStoreTopologyChange,
+  sessionChangeScopeAffectsStoredRows,
   sessionChanges,
   type SessionRowChange,
 } from "../sessions/session-row-changes.js";
@@ -37,6 +38,7 @@ import {
   matchesAgentDatabaseReadCandidatePath,
   registerOpenClawAgentDatabaseReadCandidateResource,
 } from "../state/openclaw-agent-db-resources.js";
+import { getPendingOpenClawAgentDatabasePreparation } from "../state/openclaw-agent-execution.js";
 import { readSessionSharingFactsInWorker } from "./session-sharing-facts-read.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 import { prepareMemorySessionMutationFacts } from "./session-sharing-memory-facts.js";
@@ -161,19 +163,10 @@ export async function prepareSessionMutationFacts(
         return;
       }
       if (
-        typeof change.scope === "string" &&
-        [
-          "profiles",
-          "catalog",
-          "acp",
-          "agent-runs",
-          "subagent-runs",
-          "worker-placements",
-          "worker-environments",
-          "config",
-          "config-presentation",
-          "config-profiles",
-        ].includes(change.scope)
+        // Runtime and automation still invalidate this retained authority.
+        !sessionChangeScopeAffectsStoredRows(change) &&
+        change.scope !== "runtime" &&
+        change.scope !== "automation"
       ) {
         return;
       }
@@ -289,11 +282,25 @@ export async function prepareSessionMutationFacts(
         acquireSource(candidate.path, initialStoreKeys);
       }
     }
-    if (params.storageReady) {
+    const preparations = params.storageReady ? [params.storageReady] : [];
+    for (const { candidate } of candidateIdentities) {
+      const pending = getPendingOpenClawAgentDatabasePreparation(candidate.physicalPath, "read");
+      if (pending) {
+        preparations.push(pending);
+      }
+    }
+    if (preparations.length > 0) {
+      // Discovery already joins native preparation; capture its registry witness afterward.
+      beforeDiscovery = true;
       waitingForStorage = true;
-      await params.storageReady;
+      await Promise.all(preparations);
       waitingForStorage = false;
       beforeDiscovery = false;
+      for (const { candidate, identity } of candidateIdentities) {
+        if (identity.birthtime !== undefined) {
+          assertExistingDatabaseIdentity(candidate.physicalPath, identity.key, identity.birthtime);
+        }
+      }
       for (const captured of missingCandidates) {
         captured.identity = readDatabasePathIdentitySync(captured.candidate.path);
       }
@@ -325,9 +332,7 @@ export async function prepareSessionMutationFacts(
       }),
     );
     followRegistration = inventoryRead.followRegistration;
-    assertRegistryPublication = () => {
-      inventoryRead.assertRegistryCurrent();
-    };
+    assertRegistryPublication = inventoryRead.assertRegistryCurrent;
     const members = new Map<string, PreparedSessionSharingSource>();
     const retainedReads = new Map<string, ReturnType<typeof retainPreparedSessionSharingFacts>>();
     const selected = await inventoryRead.withRead(async (sources, assertDiscoveryCurrent) => {
@@ -562,9 +567,7 @@ export async function prepareSessionMutationFacts(
         };
       };
     }
-    assertSource = () => {
-      inventoryRead.assertRegistryCurrent();
-    };
+    assertSource = inventoryRead.assertRegistryCurrent;
     const readCurrent = (cfg: OpenClawConfig) => {
       try {
         assertActive();

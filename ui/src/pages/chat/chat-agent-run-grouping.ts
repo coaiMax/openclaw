@@ -4,16 +4,9 @@ import type { MessageGroup, SystemEventGroup } from "../../lib/chat/chat-types.t
 import {
   assistantMessageCanOwnTurnActions,
   assistantMessageIsInterrupted,
+  groupEndsRunInFailure,
   resolveAssistantReplyPhase,
 } from "./chat-assistant-reply.ts";
-import {
-  groupEndsRunInFailure,
-  joinActivityRuns,
-  type ActivityRunRenderItem,
-  type CompletedTurnRenderItem,
-  type StreamRunRenderItem,
-  type WorkGroupRenderItem,
-} from "./chat-thread-grouping.ts";
 import { transcriptRunId } from "./chat-thread-run-identity.ts";
 import {
   chatItemStartsDisplayTurn,
@@ -21,6 +14,13 @@ import {
   hasForwardedSource,
   assistantGroupIsIndependentBoundary,
 } from "./chat-turn-boundary.ts";
+import {
+  joinActivityRuns,
+  type ActivityRunRenderItem,
+  type CompletedTurnRenderItem,
+  type StreamRunRenderItem,
+  type WorkGroupRenderItem,
+} from "./chat-turn-presentation.ts";
 
 type AgentRunFramePart =
   | MessageGroup
@@ -105,8 +105,10 @@ function completedFrameActionOwner(
   const messages = parts
     .flatMap(chatItemGroups)
     .flatMap((group) => (group.role === "assistant" ? group.messages : []));
-  const explicit = messages.findLast(({ message }) =>
-    assistantMessageCanOwnTurnActions(message, true),
+  const explicit = messages.findLast(
+    (source) =>
+      source.presentationOwnsFooter !== false &&
+      assistantMessageCanOwnTurnActions(source.actionMessage ?? source.message, true),
   );
   if (explicit) {
     return explicit;
@@ -116,7 +118,11 @@ function completedFrameActionOwner(
     return null;
   }
   const last = lastPart.messages.at(-1);
-  return last && assistantMessageCanOwnTurnActions(last.message) ? last : null;
+  return last &&
+    last.presentationOwnsFooter !== false &&
+    assistantMessageCanOwnTurnActions(last.actionMessage ?? last.message)
+    ? last
+    : null;
 }
 
 export function agentRunFrameActiveStatusParts(
@@ -291,9 +297,15 @@ export function coalesceAgentRunFrames(
     }
     const candidateBoundaryId = item.kind === "stream-run" ? item.boundaryId : undefined;
     const candidateRunId = itemRunId(item);
-    if (resuming && !candidateRunId && item.kind === "stream-run" && !candidateBoundaryId) {
-      // The resumed run can be working before the pane learns its run id. Its
-      // status belongs here already, so the block does not split and rejoin.
+    if (
+      resuming &&
+      !candidateRunId &&
+      ((item.kind === "stream-run" && !candidateBoundaryId) ||
+        (item.kind === "group" && item.role === "assistant"))
+    ) {
+      // The resumed run can be working before the pane learns its run id, and a
+      // handoff reports its result without one. Both belong to the open answer,
+      // so the block does not split into separate turns.
       addPart(item);
       continue;
     }

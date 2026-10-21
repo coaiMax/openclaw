@@ -7,6 +7,8 @@ import { STORAGE_FIELD_HELP } from "./zod-schema.storage.js";
 import { TELEMETRY_FIELD_HELP } from "./zod-schema.telemetry.js";
 
 export const CORE_FIELD_HELP: Record<string, string> = {
+  "security.preset":
+    'Security defaults: "personal" (default) keeps trusted full-access execution and collaborative steering; "corporate" enables per-session sandboxing, workspace file limits, strict steering, narrower session/messaging reach, and host escalation approvals. Explicit settings override preset defaults. Host policy, access controls, and live approval gates remain authoritative.',
   worktreeRoot:
     "Global directory for new managed worktrees. Use an absolute path or ~ for your home directory; defaults to <state-dir>/worktrees. Existing worktrees keep their recorded paths when this changes.",
   worktreeAcceleration:
@@ -373,8 +375,6 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Optional ACP session mode default for this agent (persistent or oneshot).",
   "agents.entries.*.runtime.acp.cwd":
     "Optional default working directory for this agent's ACP sessions.",
-  "agents.entries.*.identity.avatar":
-    "Avatar image path (relative to the agent workspace only) or a remote URL/data URL.",
   "agents.defaults.systemAgent":
     "Target settings for ambient OpenClaw system-agent and Custodian inference plus selected unscoped operator reads.",
   "agents.defaults.systemAgent.agentId":

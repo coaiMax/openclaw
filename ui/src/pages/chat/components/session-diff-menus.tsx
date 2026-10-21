@@ -10,7 +10,8 @@ import {
   type MenuHandle,
   type MenuItem,
 } from "../../../components/solid/menu.tsx";
-import { registerChatSessionEnglish } from "../../../i18n/locales/en-chat-session.ts";
+import { createTextOverflow } from "../../../components/solid/text-overflow.ts";
+import { registerChatSessionOptionalEnglish } from "../../../i18n/locales/en-chat-session-optional.ts";
 import { EDITOR_IDS, EDITOR_LABELS, type EditorId } from "../../../lib/editor-links.ts";
 import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
 import { AttachmentFileIcon } from "./chat-attachment-file-icon-solid.tsx";
@@ -25,7 +26,7 @@ import {
 } from "./session-diff-icons.tsx";
 import type { SessionDiffMode } from "./session-diff-preferences.ts";
 
-registerEnglishCatalog(registerChatSessionEnglish);
+registerEnglishCatalog(registerChatSessionOptionalEnglish);
 export { SessionDiffActionIcon } from "./session-diff-icons.tsx";
 
 export type SessionDiffMenuDraft =
@@ -39,7 +40,7 @@ export type SessionDiffMenuDraft =
       desktop?: boolean;
       mobile?: boolean;
       canReadMarkdown?: boolean;
-      canEdit?: boolean;
+      canEdit?: boolean | Promise<boolean>;
       canViewSource?: boolean;
     }
   | {
@@ -230,6 +231,7 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
   function rawItems(
     menu: SessionDiffMenuData,
     onCopyButtonRef: (button: HTMLButtonElement) => void,
+    canEdit: boolean,
   ): MenuEntry[] {
     if (menu.kind === "jump") {
       const query = jumpQuery().trim().toLocaleLowerCase();
@@ -246,7 +248,9 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
               path === menu.selected,
               <span class="session-diff-menu__jump-path">
                 <span>{path.slice(slash + 1)}</span>
-                <small>{path.slice(0, Math.max(0, slash))}</small>
+                <small ref={createTextOverflow(() => path)} title={path}>
+                  {path.slice(0, Math.max(0, slash))}
+                </small>
               </span>,
             ),
             icon: <AttachmentFileIcon filename={path} mode="preview-with-favicon" />,
@@ -318,7 +322,7 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
             ]
           : []),
       ];
-      const editActions = menu.canEdit ? [menuItem("edit", t("chat.sessionDiff.editFile"))] : [];
+      const editActions = canEdit ? [menuItem("edit", t("chat.sessionDiff.editFile"))] : [];
       const codeActions = [
         menuItem("collapse-code", t("chat.sessionDiff.collapseCode")),
         menuItem("collapse-functions", t("chat.sessionDiff.collapseFunctions")),
@@ -394,7 +398,13 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
                       menu.active.scope === "commit" && menu.active.commit === commit.sha,
                       <>
                         <span class="session-diff-menu__sha">{commit.sha}</span>
-                        <span class="session-diff-menu__subject">{commit.subject}</span>
+                        <span
+                          ref={createTextOverflow(() => commit.subject)}
+                          class="session-diff-menu__subject"
+                          title={commit.subject}
+                        >
+                          {commit.subject}
+                        </span>
                         {index === 0 && (
                           <span class="session-diff-menu__head">{t("chat.sessionDiff.head")}</span>
                         )}
@@ -413,7 +423,13 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
                   <div class="session-diff-menu__merge-base">
                     <span>{t("chat.sessionDiff.mergeBase")}</span>
                     <span class="session-diff-menu__sha">{menu.result.mergeBase.sha}</span>
-                    <span class="session-diff-menu__subject">{menu.result.mergeBase.subject}</span>
+                    <span
+                      ref={createTextOverflow(() => menu.result?.mergeBase?.subject)}
+                      class="session-diff-menu__subject"
+                      title={menu.result.mergeBase.subject}
+                    >
+                      {menu.result.mergeBase.subject}
+                    </span>
                   </div>
                 ),
               },
@@ -532,73 +548,6 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
         : []),
     ];
   }
-  function items(
-    menu: SessionDiffMenuData,
-    onCopyButtonRef: (button: HTMLButtonElement) => void,
-  ): MenuEntry[] {
-    const entries = rawItems(menu, onCopyButtonRef);
-    if ("desktop" in menu && menu.desktop) {
-      const icons: Record<string, IconName> = {
-        "scope:all": "gitBranch",
-        reading: "eye",
-        highlighted: "codeXml",
-        plain: "fileText",
-        edit: "pencil",
-        "collapse-code": "foldVertical",
-        "collapse-functions": "listTree",
-        "expand-code": "chevronsUpDown",
-      };
-      return entries.map((entry) => {
-        if (!("label" in entry) || entry.icon) {
-          return entry;
-        }
-        const action =
-          entry.id === "scope:uncommitted"
-            ? "uncommitted"
-            : entry.id === "commits"
-              ? "commit"
-              : undefined;
-        return {
-          ...entry,
-          icon: action ? (
-            <SessionDiffScopeIcon action={action} />
-          ) : icons[entry.id] ? (
-            <Icon name={icons[entry.id]!} />
-          ) : undefined,
-        };
-      });
-    }
-    if (!("mobile" in menu) || !menu.mobile) {
-      return entries;
-    }
-    const icons: Record<string, IconName> = {
-      "scope:all": "fileDiff",
-      "scope:uncommitted": "diff",
-      "collapse-all": "chevronUp",
-      "expand-all": "chevronDown",
-      "toggle-wrap": "wrapText",
-      "toggle-split": "columns2",
-      sync: "arrowLeftRight",
-      "collapse-code": "chevronUp",
-      "collapse-functions": "listTree",
-      "expand-code": "chevronDown",
-    };
-    return entries.map((entry) => {
-      if (!("label" in entry) || entry.icon) {
-        return entry;
-      }
-      const icon = entry.id.startsWith("scope:commit:") ? "history" : icons[entry.id];
-      return icon
-        ? Object.assign({}, entry, {
-            icon: (
-              <span class="session-menu__icon" aria-hidden="true">
-                <Icon name={icon} />
-              </span>
-            ),
-          })
-        : entry;
-    });
-  }
   return (
     <openclaw-session-diff-menu>
       <Show when={props.menu} keyed>
@@ -608,11 +557,77 @@ export function SessionDiffMenu(props: SessionDiffMenuProps) {
           let releaseAnchor: (() => void) | undefined;
           onSettled(() => () => releaseAnchor?.());
           const placement = menu.kind === "scope" ? (menu.placement ?? "top-start") : "bottom-end";
-          const entries = createMemo(() =>
-            items(menu, (button) => {
-              copyPathButton = button;
-            }),
+          const canEdit = createMemo(
+            () => (menu.kind === "file" ? (menu.canEdit ?? false) : false),
+            {
+              loadingValue: false,
+            },
           );
+          const onCopyButtonRef = (button: HTMLButtonElement) => {
+            copyPathButton = button;
+          };
+          // Keep file content nodes mounted when late eligibility inserts Edit.
+          const fileEntries = menu.kind === "file" ? rawItems(menu, onCopyButtonRef, true) : null;
+          const entries = createMemo((): MenuEntry[] => {
+            const rawEntries = fileEntries
+              ? fileEntries.filter((entry) => entry.id !== "edit" || canEdit())
+              : rawItems(menu, onCopyButtonRef, false);
+            const desktop = "desktop" in menu && menu.desktop;
+            if (!desktop && (!("mobile" in menu) || !menu.mobile)) {
+              return rawEntries;
+            }
+            const icons: Record<string, IconName> = desktop
+              ? {
+                  "scope:all": "gitBranch",
+                  reading: "eye",
+                  highlighted: "codeXml",
+                  plain: "fileText",
+                  edit: "pencil",
+                  "collapse-code": "foldVertical",
+                  "collapse-functions": "listTree",
+                  "expand-code": "chevronsUpDown",
+                }
+              : {
+                  "scope:all": "fileDiff",
+                  "scope:uncommitted": "diff",
+                  "collapse-all": "chevronUp",
+                  "expand-all": "chevronDown",
+                  "toggle-wrap": "wrapText",
+                  "toggle-split": "columns2",
+                  sync: "arrowLeftRight",
+                  "collapse-code": "chevronUp",
+                  "collapse-functions": "listTree",
+                  "expand-code": "chevronDown",
+                };
+            return rawEntries.map((entry) => {
+              if (!("label" in entry) || entry.icon) {
+                return entry;
+              }
+              if (desktop) {
+                const action =
+                  entry.id === "scope:uncommitted"
+                    ? "uncommitted"
+                    : entry.id === "commits"
+                      ? "commit"
+                      : undefined;
+                entry.icon = action ? (
+                  <SessionDiffScopeIcon action={action} />
+                ) : icons[entry.id] ? (
+                  <Icon name={icons[entry.id]!} />
+                ) : undefined;
+                return entry;
+              }
+              const icon = entry.id.startsWith("scope:commit:") ? "history" : icons[entry.id];
+              if (icon) {
+                entry.icon = (
+                  <span class="session-menu__icon" aria-hidden="true">
+                    <Icon name={icon} />
+                  </span>
+                );
+              }
+              return entry;
+            });
+          });
           const label = () =>
             menu.kind === "file"
               ? t("chat.sessionDiff.fileActions", { path: menu.path })

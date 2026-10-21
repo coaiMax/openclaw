@@ -8,7 +8,7 @@ title: "Computer use"
 doc-schema-version: 1
 ---
 
-Computer use lets an agent see and control the Gateway's own desktop or a paired node's desktop through one built-in `computer` tool. Both hosts use the same `computer.act` and `screen.snapshot` contracts; CUA reuses the same provider implementation on either host. The provider's descriptor identifies the supported v2 action, target, observation, and delivery families, so the tool exposes only what that provider can faithfully execute. Coordinate actions bind to a provider-issued reference frame; capable providers can also address windows and elements, request background delivery, and return structured effect or refusal evidence. A vision-capable model drives the surface.
+Computer use lets an agent see and control the Gateway's own desktop or a paired node's desktop through one built-in `computer` tool. Both hosts use the same `computer.act` and `screen.snapshot` contracts; CUA reuses the same provider implementation on either host. The provider's descriptor identifies the supported v2 action, target, observation, and delivery families, and execution accepts only what that provider can faithfully execute. The session retains the initial capability-driven tool description and schema across target discovery and reconnects; observation results report the selected desktop’s current capabilities. Unavailable actions return a structured refusal with the currently available action list. Coordinate actions bind to a provider-issued reference frame; capable providers can also address windows and elements, request background delivery, and return structured effect or refusal evidence. A vision-capable model drives the surface.
 
 For [cloud sessions](/gateway/cloud-sessions#desktop-and-computer-control), the tool is bound to the session's own desktop instead of searching paired nodes. Desktop-enabled Crabbox workers provision CUA in the same desktop session shown by the web Desktop panel. Their private computer endpoint is not exposed as an ordinary paired computer, and tool arguments cannot change its node or Gateway.
 
@@ -71,7 +71,7 @@ Add `--runtime <executable>` to start the built Gateway on another runtime, such
 
 ## The `computer` agent tool
 
-The built-in `computer` tool takes one action per call. Choose `target: "gateway"` for the Gateway desktop or `target: "node"` for a paired node. Supplying `node` also selects the node route. With neither selector, the first call uses the configured Gateway computer, otherwise the sole connected computer-capable node. A configured but unavailable Gateway computer reports its error; it never silently redirects input to a node. Later calls retain the selected host unless explicitly changed. Cloud sessions retain their fixed desktop and reject host overrides.
+The built-in `computer` tool takes one action per call. Choose `target: "gateway"` for the Gateway desktop or `target: "node"` for a paired node. Supplying `node` also selects the node route. With neither selector, the first call uses the configured Gateway computer, otherwise the sole connected computer-capable node. When the Gateway has no computer provider configured, the tool schema omits `target: "gateway"` and the guidance asks the model to omit `target` or use `target: "node"`; an explicit `target: "gateway"` reports the missing provider and names the paired-node retry instead of silently redirecting input. A configured but unavailable Gateway computer reports its error; it never silently redirects input to a node. Later calls retain the selected host unless explicitly changed. Cloud sessions retain their fixed desktop and reject host overrides.
 
 On the MCP tool path, computer control belongs to the admitted agent run and is released when that run ends. A later run can then use the same computer. Recording and file-transfer actions remain unavailable on this path.
 
@@ -83,7 +83,7 @@ Coordinates are non-negative integer pixels in the most recent screenshot; the p
 - Keyboard: `type` (text), `key` (combo such as `cmd+shift+t` or `Return`), `hold_key` (`text` combo held for `duration` seconds).
 - Pacing: `wait` (`duration` seconds), followed by a screenshot. This action runs locally and is available whenever the selected provider supports screenshots; it does not require a native wait command.
 
-Providers with the v2 window/element family can additionally expose `list_apps`, `list_windows`, `get_accessibility_tree`, `get_cursor_position`, `get_window_state`, `launch_app`, `kill_app`, `bring_to_front`, `set_value`, `zoom`, `escalate_scope`, and `invoke_menu`. The provider descriptor is authoritative; unavailable actions are omitted rather than emulated through another provider.
+Providers with the v2 window/element family can additionally expose `list_apps`, `list_windows`, `get_accessibility_tree`, `get_cursor_position`, `get_window_state`, `launch_app`, `kill_app`, `bring_to_front`, `set_value`, `zoom`, `escalate_scope`, and `invoke_menu`. The provider descriptor is authoritative; unavailable actions are rejected rather than emulated through another provider.
 
 Window input coordinates follow the observation's `details.coordinateSpace`. CUA reports `image-pixels`: use pixels in the delivered image, including when OpenClaw resized it. Peekaboo reports `global-logical-points`: use desktop logical points. Accessibility element bounds retain their native screen coordinates; prefer `elementRef` when targeting those elements. Browser coordinate inputs use viewport CSS pixels.
 
@@ -257,6 +257,8 @@ Updates preserve existing desktop configuration, explicit plugin enablement or d
 - **Capability-based**: the tool requires a connected node to advertise both `computer.act` and `screen.snapshot`. The bundled macOS app and the opt-in experimental `cua-computer` plugin fulfill the same command pair.
 
 Provider descriptors declare `contractVersion: 2`. Invalid capability descriptors or `computer.act` result envelopes are rejected with `COMPUTER_CONTRACT_MISMATCH`.
+
+The receiver accepts optional numeric `cursorX` and `cursorY` receipt fields from independently updated paired macOS nodes, including `v2026.8.1`. Unknown fields and invalid field types remain rejected.
 
 Direct `node.invoke` calls to the provider-backed `computer.act` command must include an `executionId` UUID in the action parameters. The built-in `computer` tool supplies it automatically.
 

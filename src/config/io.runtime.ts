@@ -236,12 +236,16 @@ export function readCurrentConfigForPolicyCheck(params: {
   return createCurrentConfigReader(params).loadConfig({ skipSuspiciousRecovery: true });
 }
 
-/** Keep the Claw Add policy reader bound to its admitted plugin-state lease. */
+/** Keep the Template Add policy reader bound to its admitted plugin-state lease. */
 export async function withCurrentConfigPolicyReader<T>(
   params: {
     configPath: string;
     env: NodeJS.ProcessEnv;
-    lease: { databasePath: string; assertOwned: () => void };
+    lease: {
+      databasePath: string;
+      assertOwned: () => void | Promise<void>;
+      assertCurrent: () => void;
+    };
   },
   run: (getCurrentConfig: () => OpenClawConfig) => Promise<T>,
 ): Promise<T> {
@@ -287,10 +291,12 @@ export async function readBestEffortConfig(options?: {
 export async function readBestEffortConfigSnapshot(options?: {
   observe?: boolean;
   skipPluginValidation?: boolean;
+  pluginValidation?: ConfigSnapshotReadOptions["pluginValidation"];
 }): Promise<BestEffortConfigSnapshot> {
   return await createConfigIO({
     ...(options?.observe === false ? { observe: false } : {}),
-    ...(options?.skipPluginValidation ? { pluginValidation: "skip" } : {}),
+    pluginValidation:
+      options?.pluginValidation ?? (options?.skipPluginValidation ? "skip" : undefined),
   }).readBestEffortConfigSnapshot();
 }
 

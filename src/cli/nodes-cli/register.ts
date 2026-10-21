@@ -6,11 +6,11 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { type Command, Option } from "commander";
 import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
-import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
+import { terminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { getTerminalTableWidth, renderTable } from "../../../packages/terminal-core/src/table.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { defaultRuntime } from "../../runtime.js";
-import { shortenHomePath } from "../../utils.js";
+import { displayPath } from "../../utils.js";
 import { resolveCliArgvInvocation } from "../argv-invocation.js";
 import { hasFlag } from "../argv.js";
 import { formatHelpExamples } from "../help-format.js";
@@ -22,6 +22,7 @@ import {
   parseCameraSnapPayload,
   resolveCameraClipTarget,
   resolveCameraSnapTargets,
+  withCameraArtifactBatch,
   writeCameraPayloadToFile,
   writeCameraClipPayloadToFile,
 } from "../nodes-camera.js";
@@ -266,7 +267,7 @@ export async function registerNodesCli(program: Command, argv: readonly string[]
           const tableWidth = getTerminalTableWidth();
           // Device fields come from the node; keep its control bytes off the operator's terminal.
           const text = (value: unknown, fallback: string) =>
-            typeof value === "string" ? sanitizeTerminalText(value) : fallback;
+            typeof value === "string" ? terminalText`${value}` : fallback;
           const rows = devices.map((device) => ({
             Name: text(device.name, "Unknown Camera"),
             Position: text(device.position, muted("unspecified")),
@@ -366,27 +367,36 @@ export async function registerNodesCli(program: Command, argv: readonly string[]
             });
           }
 
-          const results = [];
-          for (const { facing: artifactFacing, payload, filePath } of captures) {
-            await writeCameraPayloadToFile({
-              filePath,
-              payload,
-              expectedHost: node.remoteIp,
-              invalidPayloadMessage: "invalid camera.snap payload",
-            });
-            results.push({
-              facing: artifactFacing,
-              path: filePath,
-              width: payload.width,
-              height: payload.height,
-            });
-          }
+          await withCameraArtifactBatch(
+            captures.map((capture) => capture.filePath),
+            async (filePaths) => {
+              const results = [];
+              for (const [index, { facing: artifactFacing, payload }] of captures.entries()) {
+                const filePath = filePaths[index];
+                if (filePath === undefined) {
+                  throw new Error("missing camera batch output path");
+                }
+                await writeCameraPayloadToFile({
+                  filePath,
+                  payload,
+                  expectedHost: node.remoteIp,
+                  invalidPayloadMessage: "invalid camera.snap payload",
+                });
+                results.push({
+                  facing: artifactFacing,
+                  path: filePath,
+                  width: payload.width,
+                  height: payload.height,
+                });
+              }
 
-          if (opts.json) {
-            defaultRuntime.writeJson({ files: results });
-            return;
-          }
-          defaultRuntime.log(results.map((r) => shortenHomePath(r.path)).join("\n"));
+              if (opts.json) {
+                defaultRuntime.writeJson({ files: results });
+                return;
+              }
+              defaultRuntime.log(results.map((r) => displayPath(r.path)).join("\n"));
+            },
+          );
         });
       }),
     { timeoutMs: 60_000 },
@@ -453,7 +463,7 @@ export async function registerNodesCli(program: Command, argv: readonly string[]
             });
             return;
           }
-          defaultRuntime.log(shortenHomePath(filePath));
+          defaultRuntime.log(displayPath(filePath));
         });
       }),
     { timeoutMs: 90_000 },
@@ -517,7 +527,7 @@ export async function registerNodesCli(program: Command, argv: readonly string[]
             });
             return;
           }
-          defaultRuntime.log(shortenHomePath(written.path));
+          defaultRuntime.log(displayPath(written.path));
         });
       }),
     { timeoutMs: 180_000 },

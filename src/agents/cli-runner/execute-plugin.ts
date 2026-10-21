@@ -19,6 +19,8 @@ import type {
   CliBackendUserInputResult,
 } from "../../plugins/cli-backend.types.js";
 import type { RunExit, TerminationReason } from "../../process/supervisor/types.js";
+import { isHostGeneratedInputProvenance } from "../../sessions/input-provenance.js";
+import { assertionSucceeds } from "../../shared/assertion.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import {
   recordAdjustedParamsForToolCall,
@@ -43,7 +45,7 @@ import {
 } from "./cli-native-tool-approval.js";
 import { createCliAbortError } from "./execute-node-claude.js";
 import { closePluginIterator, waitForIteratorValue } from "./execute-plugin-iterator.js";
-import { createCliPluginWatchdog, type CliWatchdogClock } from "./execute-plugin-watchdog.js";
+import { createCliPluginWatchdog } from "./execute-plugin-watchdog.js";
 import { createSteeredCliMessageInjection } from "./execute-plugin.steered-transcript.js";
 import { attachCliReplyBackend, createCliRunCurrentAssertion } from "./execution-target.js";
 import { createCliFailoverError as failover } from "./exit-error.js";
@@ -335,14 +337,7 @@ function createPluginUserInputHandler(params: {
             onPartialReply: run.onPartialReply,
           },
           signal,
-          isActive: () => {
-            try {
-              assertQuestionActive();
-              return true;
-            } catch {
-              return false;
-            }
-          },
+          isActive: () => assertionSucceeds(assertQuestionActive),
           questionId: request.toolCallId ? (batch) => `${request.toolCallId}:${batch}` : undefined,
         }),
       );
@@ -383,7 +378,6 @@ export async function executePluginOwnedProcess(params: {
   forceNewSession?: boolean;
   sessionId?: string;
   noOutputTimeoutMs: number;
-  watchdogClock?: CliWatchdogClock;
   consumeStdout: (chunk: string) => void;
   onOutstandingWorkChange?: (active: boolean) => void;
   activeToolCount?: () => number;
@@ -495,33 +489,30 @@ export async function executePluginOwnedProcess(params: {
       createCliAbortError,
     );
     assertCurrent();
-    watchdog = createCliPluginWatchdog(
-      {
-        provider: run.provider,
-        model: params.context.modelId,
-        sessionId: run.sessionId,
-        lane: run.lane,
-        overallTimeoutMs: clampPositiveTimerTimeoutMs(run.timeoutMs),
-        noOutputTimeoutMs: clampPositiveTimerTimeoutMs(params.noOutputTimeoutMs),
-        useResume: params.useResume,
-        getActiveAskUserDeadline: params.getActiveLoopbackAskUserDeadline,
-        activeToolCount: () => Math.max(params.activeToolCount?.() ?? 0, outstanding.approvals),
-        backgroundTaskCount: () => outstanding.background,
-        compactionActive: () => params.compactionActive?.() ?? false,
-        hasObservedActivity: () => outstanding.observed,
-        hasReplayUnsafeActivity: () => outstanding.replayUnsafe,
-        onNoOutputTimeout: (error) => {
-          termination.reason = "no-output-timeout";
-          params.onNoOutputTimeout?.(error);
-          controller.abort(error);
-        },
-        onOverallTimeout: () => {
-          termination.reason = "overall-timeout";
-          controller.abort(new Error("CLI plugin runtime exceeded its execution timeout."));
-        },
+    watchdog = createCliPluginWatchdog({
+      provider: run.provider,
+      model: params.context.modelId,
+      sessionId: run.sessionId,
+      lane: run.lane,
+      overallTimeoutMs: clampPositiveTimerTimeoutMs(run.timeoutMs),
+      noOutputTimeoutMs: clampPositiveTimerTimeoutMs(params.noOutputTimeoutMs),
+      useResume: params.useResume,
+      getActiveAskUserDeadline: params.getActiveLoopbackAskUserDeadline,
+      activeToolCount: () => Math.max(params.activeToolCount?.() ?? 0, outstanding.approvals),
+      backgroundTaskCount: () => outstanding.background,
+      compactionActive: () => params.compactionActive?.() ?? false,
+      hasObservedActivity: () => outstanding.observed,
+      hasReplayUnsafeActivity: () => outstanding.replayUnsafe,
+      onNoOutputTimeout: (error) => {
+        termination.reason = "no-output-timeout";
+        params.onNoOutputTimeout?.(error);
+        controller.abort(error);
       },
-      params.watchdogClock,
-    );
+      onOverallTimeout: () => {
+        termination.reason = "overall-timeout";
+        controller.abort(new Error("CLI plugin runtime exceeded its execution timeout."));
+      },
+    });
     params.setOnActiveLoopbackAskUserDeadlineChange?.(() => watchdog?.reset());
     params.setOnCompactionActiveChange?.(() => reportOutstandingWork());
 
@@ -566,6 +557,9 @@ export async function executePluginOwnedProcess(params: {
         env: params.env,
         prompt: params.prompt,
         ...(params.promptContext ? { promptContext: params.promptContext } : {}),
+        ...(isHostGeneratedInputProvenance(params.context.params.inputProvenance)
+          ? { promptOrigin: "host" as const }
+          : {}),
         modelId: params.context.normalizedModel,
         systemPrompt: stripSystemPromptCacheBoundary(params.context.systemPrompt).trim(),
         ...(params.sessionId ? { sessionId: params.sessionId } : {}),
@@ -699,9 +693,7 @@ export async function executePluginOwnedProcess(params: {
     params.onOutstandingWorkChange?.(false);
     // Permission callbacks can be retained by the plugin or its subprocess.
     // Closing the turn fences those capabilities before any outer cleanup runs.
-    if (!controller.signal.aborted) {
-      controller.abort(new Error("CLI plugin runtime turn is no longer active."));
-    }
+    controller.abort(new Error("CLI plugin runtime turn is no longer active."));
     detachReplyBackend?.();
     await closePluginIterator(iterator);
   }

@@ -11,6 +11,7 @@ import {
   createMissingReplyNotice,
   MISSING_REPLY_NOTICE_TEXT,
   isSyntheticSourceReplyTurn,
+  resolveClaimedReplyExpectation,
   resolveReplyCompletion,
   shouldDeliverMissingReplyNotice,
 } from "../../agents/reply-completion.js";
@@ -39,6 +40,8 @@ import {
   isReplyPayloadStatusNotice,
   isReplyPayloadTerminalContent,
   markReplyPayloadForSourceSuppressionDelivery,
+  selectAutomationReplyPayloads,
+  setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -61,7 +64,6 @@ import { resolveResponseUsageLine } from "./agent-runner-usage-line.js";
 import {
   resolveAutomationReplyState,
   retainAutomationReasoningWithFinal,
-  selectAutomationReplyPayloads,
 } from "./automation-reply-payloads.js";
 import { attachMcpAppChannelAction, attachMcpConnectChannelAction } from "./mcp-channel-actions.js";
 import { normalizeReplyPayload } from "./normalize-reply.js";
@@ -85,7 +87,6 @@ export async function prepareReplyAgentPayloads(state: {
     blockStreamingEnabled,
     cfg,
     followupRun,
-    isHeartbeat,
     opts,
     replyMediaContext,
     replyOperation,
@@ -133,14 +134,14 @@ export async function prepareReplyAgentPayloads(state: {
         InputProvenance: followupRun.run.inputProvenance,
       },
       cfg,
-      isHeartbeat,
+      scheduledAutomation: followupRun.run.scheduledAutomation !== undefined,
     });
   const missingReplyNoticeAllowed = shouldDeliverMissingReplyNotice({
     ...followupRun.run,
+    scheduledAutomation: followupRun.run.scheduledAutomation !== undefined,
     config: cfg,
     terminalReplyExpectation,
     trigger: resolveReplyRunTrigger(context),
-    isHeartbeat,
     currentInboundEventKind: followupRun.currentInboundEventKind,
   });
   const backgroundMissingReply =
@@ -153,11 +154,10 @@ export async function prepareReplyAgentPayloads(state: {
     blocked,
     successfulTerminal,
     authoredSilence,
-    heartbeatAcknowledgment,
     pendingContinuation,
     automationNoChange,
     reasoningPayloadsEnabled,
-  } = resolveAutomationReplyState(context.execution, { opts, isHeartbeat });
+  } = resolveAutomationReplyState(context.execution, { opts });
   const strandedFinal =
     successfulTerminal &&
     runResult.meta?.terminalReply?.disposition === "empty" &&
@@ -203,8 +203,8 @@ export async function prepareReplyAgentPayloads(state: {
   });
   const sourceReplyDelivery = resolveSourceReplyDelivery(runResult, terminalReplyDelivery);
   let completion = resolveReplyCompletion(
-    terminalReplyExpectation,
-    blocked || heartbeatAcknowledgment
+    resolveClaimedReplyExpectation(terminalReplyExpectation, runResult.meta),
+    blocked
       ? "blocked"
       : authoredSilence
         ? "silent"
@@ -294,7 +294,6 @@ export async function prepareReplyAgentPayloads(state: {
       sourceReplyDeliveryMode: sourceReplyPolicy.sourceReplyDeliveryMode,
       sendPolicyDenied: sourceReplyPolicy.sendPolicyDenied,
       successfulSourceReplyDelivery: completedSourceReplyDelivery,
-      isHeartbeat,
       isRoomEvent: false,
     });
     return recovery.kind === "diagnostic" ? recovery.payload : undefined;
@@ -326,7 +325,6 @@ export async function prepareReplyAgentPayloads(state: {
       config: cfg,
       payloads,
       conversationContext: sessionCtx.agentText ?? sessionCtx.BodyForAgent,
-      isHeartbeat,
       silentExpected: followupRun.run.silentExpected,
       blockStreamingEnabled,
       blockReplyPipeline,
@@ -381,8 +379,7 @@ export async function prepareReplyAgentPayloads(state: {
     return returnWithQueuedFollowupDrain(preparedPayload);
   };
   const recordMissingReply = () => {
-    const emptyHeartbeat = isHeartbeat && completion.outcome === "empty";
-    if ((completion.outcome === "missing" || emptyHeartbeat) && !replyOperation.result) {
+    if (completion.outcome === "missing" && !replyOperation.result) {
       replyOperation.fail("run_failed", new Error(MISSING_REPLY_NOTICE_TEXT));
       recordReplyOperationAgentTurn(followupRun.replyOperationRunStates, replyOperation, {
         kind: "settled",
@@ -413,7 +410,7 @@ export async function prepareReplyAgentPayloads(state: {
     followupRun.currentInboundEventKind !== "room_event" &&
     !isSyntheticSourceReplyTurn({
       inputProvenance: followupRun.run.inputProvenance,
-      isHeartbeat,
+      scheduledAutomation: followupRun.run.scheduledAutomation !== undefined,
     }) &&
     context.execution.status === "ok" &&
     runResult.meta?.aborted !== true &&
@@ -486,10 +483,16 @@ export async function prepareReplyAgentPayloads(state: {
   }
   const fallbackNoticePayloads: ReplyPayload[] = fallbackNoticeText
     ? [
-        markReplyPayloadForSourceSuppressionDelivery({
-          text: fallbackNoticeText,
-          isFallbackNotice: true,
-        }),
+        setReplyPayloadMetadata(
+          markReplyPayloadForSourceSuppressionDelivery({
+            text: fallbackNoticeText,
+            isFallbackNotice: true,
+          }),
+          !providerPolicyRetrySucceeded &&
+            runResult.meta.modelFallbackTranscriptToModel === fallbackTransition.activeModelRef
+            ? { modelFallbackNotice: true }
+            : {},
+        ),
       ]
     : [];
 
@@ -541,7 +544,7 @@ export async function prepareReplyAgentPayloads(state: {
     }
   }
 
-  const quietFinal = authoredSilence || heartbeatAcknowledgment || automationNoChange;
+  const quietFinal = authoredSilence || automationNoChange;
   const sourcePayloads = selectAutomationReplyPayloads(
     payloadArray,
     automationNoChange,
