@@ -370,11 +370,28 @@ async function runServerCommand(
   });
 }
 
+/**
+ * Map a Linux loader failure to the runtime package that actually provides the
+ * missing library. The verified llama-server links both OpenSSL 3 and OpenMP, so
+ * recommending one fixed package misdirects recovery when a host upgrade removes a
+ * different dependency (for example Ubuntu 26.10 dropping libssl3t64, which leaves
+ * libssl.so.3 / libcrypto.so.3 unresolved). (#179989)
+ */
+export function resolveLinuxRuntimeDependencyGuidance(detail: string): string {
+  if (/\blib(?:ssl|crypto)\.so\.?3\b/iu.test(detail)) {
+    return "It requires the OpenSSL 3 runtime, which is missing (libssl.so.3 / libcrypto.so.3). Install OpenSSL 3 (for example libssl3 on Debian/Ubuntu, or the OpenSSL 3 compatibility package on releases that ship OpenSSL 4), then rerun llama.cpp setup.";
+  }
+  if (/\blibgomp\.so\b/iu.test(detail)) {
+    return "Install the OpenMP runtime (for example libgomp1 on Debian/Ubuntu or libgomp on Fedora), then rerun llama.cpp setup.";
+  }
+  return "Install the runtime libraries reported as missing below, then rerun llama.cpp setup.";
+}
+
 function formatRuntimeDependencyError(error: unknown): Error {
   const detail = error instanceof Error ? error.message : String(error);
   if (process.platform === "linux") {
     return new Error(
-      `The verified llama-server build could not start. Install the OpenMP runtime (for example libgomp1 on Debian/Ubuntu or libgomp on Fedora), then rerun llama.cpp setup. Detail: ${detail}`,
+      `The verified llama-server build could not start. ${resolveLinuxRuntimeDependencyGuidance(detail)} Detail: ${detail}`,
       { cause: error },
     );
   }

@@ -38,6 +38,7 @@ import {
 import {
   downloadVerifiedFile,
   ensureLlamaServerInstalled,
+  resolveLinuxRuntimeDependencyGuidance,
   sha256File,
   UnsupportedLlamaServerHostError,
 } from "./llama-server-install.js";
@@ -409,6 +410,41 @@ describe("downloadVerifiedFile", () => {
     }
     expect(release).toHaveBeenCalledOnce();
     expect(await fs.readdir(root)).toEqual(["model.gguf"]);
+  });
+});
+
+describe("resolveLinuxRuntimeDependencyGuidance", () => {
+  it("names OpenSSL 3 for a missing libssl.so.3 loader failure instead of OpenMP", () => {
+    const guidance = resolveLinuxRuntimeDependencyGuidance(
+      "llama-server: error while loading shared libraries: libssl.so.3: cannot open shared object file: No such file or directory",
+    );
+    expect(guidance).toMatch(/OpenSSL 3/u);
+    expect(guidance).toMatch(/libssl3/u);
+    expect(guidance).not.toMatch(/OpenMP|libgomp/u);
+  });
+
+  it("names OpenSSL 3 for a missing libcrypto.so.3 loader failure", () => {
+    expect(
+      resolveLinuxRuntimeDependencyGuidance(
+        "llama-server: error while loading shared libraries: libcrypto.so.3: cannot open shared object file: No such file or directory",
+      ),
+    ).toMatch(/OpenSSL 3/u);
+  });
+
+  it("keeps OpenMP guidance for a missing libgomp.so.1 loader failure", () => {
+    const guidance = resolveLinuxRuntimeDependencyGuidance(
+      "llama-server: error while loading shared libraries: libgomp.so.1: cannot open shared object file: No such file or directory",
+    );
+    expect(guidance).toMatch(/OpenMP runtime/u);
+    expect(guidance).toMatch(/libgomp1/u);
+  });
+
+  it("does not blame a specific package for an unrelated launch failure", () => {
+    const guidance = resolveLinuxRuntimeDependencyGuidance(
+      "llama-server: Segmentation fault (core dumped)",
+    );
+    expect(guidance).not.toMatch(/OpenMP|libgomp|OpenSSL/u);
+    expect(guidance).toMatch(/runtime libraries reported as missing/u);
   });
 });
 
