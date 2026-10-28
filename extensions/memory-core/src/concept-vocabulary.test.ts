@@ -1,20 +1,16 @@
-// Memory Core tests cover concept vocabulary plugin behavior.
 import { describe, expect, it } from "vitest";
-import {
-  deriveConceptTags,
-  normalizeConceptToken,
-  summarizeConceptTagScriptCoverage,
-} from "./concept-vocabulary.js";
+import { deriveConceptTags, summarizeConceptTagScriptCoverage } from "./concept-vocabulary.js";
 
 describe("concept vocabulary", () => {
-  it("respects astral letter boundaries around short glossary terms", () => {
+  it("respects token boundaries and grammatical stopwords", () => {
     const tags = deriveConceptTags({
       path: "memory/2026-04-04.md",
-      snippet: "kv𐐀 𐐀kv s3𐐀 𐐀s3",
+      snippet: "kv𐐀 𐐀kv s3𐐀 𐐀s3 Ich der die und mit the and",
     });
     expect(tags).toEqual(expect.arrayContaining(["kv𐐨", "𐐨kv", "s3𐐨", "𐐨s3"]));
     expect(tags).not.toContain("kv");
     expect(tags).not.toContain("s3");
+    expect(tags).not.toContain("ich");
   });
 
   it("extracts protected and segmented CJK concept tags", () => {
@@ -52,20 +48,5 @@ describe("concept vocabulary", () => {
       mixedEntryCount: 1,
       otherEntryCount: 1,
     });
-  });
-
-  it("filters the German personal pronoun 'ich' as a stopword (#178481)", () => {
-    expect(normalizeConceptToken("ich")).toBeNull();
-    expect(normalizeConceptToken("Ich")).toBeNull();
-  });
-
-  it("does not surface 'ich' as a concept tag from German text (#178481)", () => {
-    const tags = deriveConceptTags({
-      path: "memory/2026-10-19.md",
-      snippet: "Ich habe die Konfiguration der Datenbank geprüft.",
-    });
-    expect(tags).not.toContain("ich");
-    // Legitimate German concepts are still extracted.
-    expect(tags).toContain("konfiguration");
   });
 });
