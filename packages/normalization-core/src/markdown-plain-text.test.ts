@@ -70,9 +70,9 @@ describe("flattenMarkdownToPlainText", () => {
       "Keep [this](https://example.com/open( text",
     ],
     [
-      "heading and list markers",
-      "# Heading\n- bullet\n+ plus\n* star\n2) numbered\n> quote",
-      "Heading bullet plus star numbered quote",
+      "block markers, nested quotes, line boundaries, and inline comparisons",
+      "# Heading\n- bullet\n+ plus\n* star\n2) numbered\n> quote\n>quoted\n>> deep\n>>>tight\n> > spaced\n> >>mixed\n>\r\n    > literal\nNext a > b\n\\>escaped\n#Heading\n-bullet",
+      "Heading bullet plus star numbered quote quoted deep tight spaced mixed > literal Next a > b \\>escaped #Heading -bullet",
     ],
     ["emphasis", "**bold** _italic_ ~~struck~~", "bold italic struck"],
     ["wider opener preference", "__a_ _b__", "a_ _b"],
@@ -98,15 +98,6 @@ describe("flattenMarkdownToPlainText", () => {
       "Use foo_bar_baz from ~/.openclaw",
     ],
     ["multiline whitespace", "First\n\n  second\t third", "First second third"],
-  ])("flattens %s", (_label, input, expected) => {
-    expect(flattenMarkdownToPlainText(input)).toBe(expected);
-  });
-
-  it.each([
-    ["blockquote without a following space", ">quoted", "quoted"],
-    ["nested blockquote markers", ">> deep", "deep"],
-    ["blockquote marker run without a following space", ">>>tight", "tight"],
-    ["blockquote across lines with and without a space", "> one\n>two", "one two"],
   ])("flattens %s", (_label, input, expected) => {
     expect(flattenMarkdownToPlainText(input)).toBe(expected);
   });
