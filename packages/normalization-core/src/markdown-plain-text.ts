@@ -11,8 +11,9 @@ export function flattenMarkdownToPlainText(text: string): string {
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/```/g, " ")
     .replace(/`([^`]*)`/g, "$1");
+  // `>` allows an optional following space and may nest (`>>`); other markers require one.
   let flattened = stripInlineLinks(withoutCode).replace(
-    /^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gm,
+    /^\s{0,3}(?:>+\s*|(?:#{1,6}|[-+*]|\d+[.)])\s+)/gm,
     "",
   );
   for (const marker of ["*", "_", "~"] as const) {

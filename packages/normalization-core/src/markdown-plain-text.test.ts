@@ -102,6 +102,15 @@ describe("flattenMarkdownToPlainText", () => {
     expect(flattenMarkdownToPlainText(input)).toBe(expected);
   });
 
+  it.each([
+    ["blockquote without a following space", ">quoted", "quoted"],
+    ["nested blockquote markers", ">> deep", "deep"],
+    ["blockquote marker run without a following space", ">>>tight", "tight"],
+    ["blockquote across lines with and without a space", "> one\n>two", "one two"],
+  ])("flattens %s", (_label, input, expected) => {
+    expect(flattenMarkdownToPlainText(input)).toBe(expected);
+  });
+
   it.each(["*", "_", "~~"])("preserves repeated unmatched %s openers", (marker) => {
     const text = ` ${marker}field`.repeat(8_192);
     expect(flattenMarkdownToPlainText(text)).toBe(text.trim());
